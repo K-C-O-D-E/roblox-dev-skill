@@ -452,13 +452,18 @@ instruction to *you*, the agent reading this file: **when this skill is invoked*
 ### Logic:
 ```
 IF (current_date - last_updated) > update_interval_days (default: 7):
-    TELL the user:
+    WARN the user once, in your first reply:
     "⏰ Roblox Dev Skill knowledge was last updated on {last_updated}, {days} days ago.
-     Want me to run a knowledge update before we rely on it?"
-    ...then WAIT. Do not update anything unless they say yes.
+     Say if you want a knowledge update."
+    ...then CONTINUE with the task. Do not stop and wait for an answer.
+    Check each engine API that you use against the local API dump or the official docs.
+    Do not update anything unless the user asks for an update.
 ELSE:
     Proceed normally — knowledge is fresh.
 ```
+
+This check is a warning, not a stop. Old knowledge is a reason to check each API, not a reason to
+stop the task. This agrees with the obsolescence check above: staleness never blocks the answer.
 
 ### Decision Rules:
 - **NEVER auto-update** without user approval — always ask first
