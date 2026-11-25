@@ -446,8 +446,10 @@ end
 ## Knowledge Freshness Check
 
 Nothing about this is automatic — there is no scheduler, hook, or background job behind it. It is an
-instruction to *you*, the agent reading this file: **when this skill is invoked**, read
-`metadata.json` in this skill directory and compare `last_updated` to the current date.
+instruction to *you*, the agent reading this file: **when this skill is invoked**, read only the
+first 10 lines of `metadata.json` in this skill directory and compare `last_updated` to the
+current date. Those lines hold `last_updated` and `update_interval_days`. Do not read the whole
+file: its `update_history` makes it about 72 KB, about 18,000 tokens, for one date.
 
 ### Logic:
 ```
@@ -470,7 +472,9 @@ stop the task. This agrees with the obsolescence check above: staleness never bl
 - **Source of truth**: https://create.roblox.com/docs, https://devforum.roblox.com
 - **Decision maker**: Always the user (never the AI alone)
 - **Update process**: Deep research → fact-check → QnA with user → apply → audit
-- **After update**: Update `metadata.json` with new timestamp, version, and changes
+- **After update**: Update `metadata.json` with new timestamp, version, and changes. Keep
+  `last_updated` and `update_interval_days` in the first 10 lines, before `update_history`,
+  because the freshness check reads only those lines.
 
 ---
 
