@@ -255,7 +255,8 @@ too, while an unwelded model parented to the character is not; inside a `BindToS
 callback `Instance.new` / `Clone` work but `Destroy()` and re-parenting error, so destroy from
 `RunService.PostSimulation`; `Humanoid:EquipTool()` / `UnequipTools()` cannot be called there,
 and Tools are "not fully supported" yet; `RunService:GetPredictionStatus()` tells a client
-whether an instance is predicted. The parallel `BindToSimulationParallel` is not enabled in 0.746.
+whether an instance is predicted. `BindToSimulationParallel` runs from a script under an `Actor`
+(*tested* 2026-11-07; see `performance-optimization.md`).
 
 Heuristic checks (rubber-banding, speed checks, below) still work without it; Server Authority
 removes the class of exploits they guess at, such as speed hacks, at the engine level.
@@ -776,6 +777,6 @@ end
 
 | Date | Change | Section |
 |------|--------|---------|
-| June 2026 | `BanAsync` gains `ApplyDeviceBlock` param (24hr, desktop only) | [§10](#10-banasync-api--device-blocking-june-2026) |
+| June 2026 | `BanAsync` gains `ApplyDeviceBlock` param (24hr, desktop only) | [§10](#10-banasync-api--device-blocking) |
 | July 2026 | Server Authority full release (2026-07-09); client beta had started 2026-04-30 | [§5](#5-anti-cheat-design-philosophy) |
 | Delayed (was October 2026) | Scoped user identifiers rollout — domain-scoped IDs per game; new timeline promised for October | [§11](#11-scoped-user-identifiers-warning) |
