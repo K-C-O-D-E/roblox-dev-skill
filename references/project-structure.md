@@ -283,6 +283,12 @@ end
 return PlayerDataService
 ```
 
+> **One writer for `PlayerData_v1`.** This service is the one writer of the player record. A game
+> that sells developer products must keep each receipt grant and `ProcessedReceipts` in this same
+> record, and write the record from one session owner. Do not add a second writer for the same
+> key: its `SetAsync` on leave saves an older in-memory copy over the grant. Example 6 in
+> `worked-examples.md` (`ReceiptHandler`) is that session owner, and it replaces this service.
+
 ### Client Controller Example
 
 ```luau

@@ -20,8 +20,8 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/security-hardening.md` | 27 | 37 | 3 | 0 | 7 | 0 | 13 |
 | `references/studio-plugins-and-limits.md` | 18 | 1 | 1 | 1 | 9 | 0 | 0 |
 | `references/ui-systems.md` | 17 | 13 | 3 | 1 | 3 | 0 | 5 |
-| `references/worked-examples.md` | 22 | 9 | 3 | 1 | 23 | 1 | 1 |
-| **total** | **535** | **281** | **96** | **95** | **122** | **1** | **138** |
+| `references/worked-examples.md` | 22 | 9 | 3 | 1 | 23 | 3 | 1 |
+| **total** | **535** | **281** | **96** | **95** | **122** | **3** | **138** |
 
 ## Verified claims
 

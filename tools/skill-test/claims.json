@@ -4361,7 +4361,7 @@
   {
    "id": "worked-examples-032",
    "file": "references/worked-examples.md",
-   "quote": "(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers all seven rows.) Use",
+   "quote": "(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers each row.) Use",
    "status": "unverified",
    "kind": "negative",
    "source": "",
@@ -4373,6 +4373,26 @@
    "file": "references/worked-examples.md",
    "quote": "`PurchaseId`s with a `test-` prefix so they cannot collide with real purchases.",
    "status": "advice",
+   "kind": "negative",
+   "source": "",
+   "evidence": "",
+   "checked": ""
+  },
+  {
+   "id": "worked-examples-061",
+   "file": "references/worked-examples.md",
+   "quote": "`UpdateAsync` runs the transform, then raises an error before the write | `NotProcessedYet`. The store and the session hold 0 `Potion`",
+   "status": "unverified",
+   "kind": "negative",
+   "source": "",
+   "evidence": "",
+   "checked": ""
+  },
+  {
+   "id": "worked-examples-062",
+   "file": "references/worked-examples.md",
+   "quote": "`UpdateAsync` writes, then raises an error | `NotProcessedYet`. The session holds 1 `Potion`",
+   "status": "unverified",
    "kind": "negative",
    "source": "",
    "evidence": "",
