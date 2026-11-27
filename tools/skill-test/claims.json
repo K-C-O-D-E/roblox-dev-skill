@@ -12761,7 +12761,7 @@
   {
    "id": "datastore-persistence-041",
    "file": "references/datastore-persistence.md",
-   "quote": "4. Set `profile.Data.migrated = true` only after copying validated data or confirming absence (`oldData == nil` with `not oldStore:IsBackup()`). If the read errors, returns a backup, or returns an unrecognized value, end the session and kick the player without setting `migrated = true`",
+   "quote": "4. Set `profile.Data.migrated = true` only after copying validated data or confirming genuine absence (`oldData == nil`, `not oldStore:IsBackup()`, and no `OrderedBackups` index entry). If any read errors, returns a backup, finds an index entry with a missing value, or returns an unrecognized value, end the session and kick the player without setting `migrated = true`",
    "status": "advice",
    "kind": "negative",
    "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md",
@@ -12791,11 +12791,11 @@
   {
    "id": "datastore-persistence-040b",
    "file": "references/datastore-persistence.md",
-   "quote": "3. Treat only `nil` (with `not oldStore:IsBackup()`) as a verified absent record. If `oldData ~= nil`, validate that it is a table with valid expected fields before modifying `profile.Data`; reject unrecognized scalars or malformed fields so legacy data is never skipped permanently",
+   "quote": "3. If `oldData == nil` (with `not oldStore:IsBackup()`), verify genuine absence by checking DataStore2's `OrderedBackups` index (`DataStoreService:GetOrderedDataStore(\"PlayerSave/\" .. player.UserId):GetSortedAsync(false, 1):GetCurrentPage()[1]`).",
    "status": "source",
    "kind": "negative",
-   "source": "Kampfkarren/Roblox DataStore2 API",
-   "evidence": "DataStore2 supports scalar values as well as tables; only nil with not IsBackup() proves absence.",
+   "source": "Kampfkarren/Roblox DataStore2 OrderedBackups.lua#L24-L40",
+   "evidence": "OrderedBackups:Get() returns nil without IsBackup() if the OrderedDataStore index exists but the value key is missing; check the index before marking migrated.",
    "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
@@ -12817,6 +12817,16 @@
    "source": "Roblox/creator-docs reference/engine/classes/GlobalDataStore.md#UpdateAsync",
    "evidence": "Omitting userIds or metadata in the UpdateAsync transform return clears existing associated IDs and metadata.",
    "checked": "2026-11-26, engine 0.748.0.7481526"
+  },
+  {
+   "id": "datastore-persistence-039-stop-writers",
+   "file": "references/datastore-persistence.md",
+   "quote": "1. Stop all legacy DataStore2 writers before migration starts, then start the ProfileStore session and block gameplay (do not expose the profile to game systems) until migration completes",
+   "status": "advice",
+   "kind": "negative",
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md",
+   "evidence": "Legacy DataStore2 writers must stop before migration so old servers do not overwrite or diverge from migrated ProfileStore sessions.",
+   "checked": "2026-11-27, engine 0.748.0.7481526"
   }
  ]
 }

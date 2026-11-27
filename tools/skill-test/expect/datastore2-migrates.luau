@@ -1,4 +1,6 @@
--- expect: old DataStore2 data merges once, verified absence marks migrated, bounded repeated failures return backup and refuse migration, and unrecognized or malformed legacy values are rejected.
+-- expect: old DataStore2 data merges once, genuine absence marks migrated, missing indexed value refuses migration, bounded repeated failures return backup and refuse migration, and unrecognized or malformed legacy values are rejected.
+local skilltestDataStoreService = game:GetService("DataStoreService")
+
 local profile = { Data = { coins = 0, inventory = {}, migrated = false } }
 local fake = { UserId = -910004 } :: any
 __skilltest.eq("existing record returns true", migrateFromDataStore2(fake, profile), true)
@@ -30,3 +32,12 @@ local corruptPlayer = { UserId = -910008 } :: any
 __skilltest.eq("malformed legacy field returns false", migrateFromDataStore2(corruptPlayer, corruptProfile), false)
 __skilltest.eq("malformed legacy field does not mark migrated", corruptProfile.Data.migrated, false)
 __skilltest.eq("malformed legacy field leaves coins intact", corruptProfile.Data.coins, 10)
+
+-- OrderedBackups index exists, but DataStore2:Get(nil) returned nil without IsBackup().
+local indexedMissingStore = skilltestDataStoreService:GetOrderedDataStore("PlayerSave/-910009")
+indexedMissingStore:SetAsync("1", 1)
+local indexedMissingProfile = { Data = { coins = 10, inventory = {}, migrated = false } }
+local indexedMissingPlayer = { UserId = -910009 } :: any
+__skilltest.eq("missing indexed legacy value returns false", migrateFromDataStore2(indexedMissingPlayer, indexedMissingProfile), false)
+__skilltest.eq("missing indexed legacy value does not mark migrated", indexedMissingProfile.Data.migrated, false)
+__skilltest.eq("missing indexed legacy value leaves coins intact", indexedMissingProfile.Data.coins, 10)

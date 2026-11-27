@@ -228,6 +228,7 @@ local SAVE_ATTEMPTS = 3
 local BASE_RETRY_DELAY = 1 -- seconds
 local MAX_RETRY_DELAY = 8 -- seconds
 local SHUTDOWN_SAVE_BUDGET_SECONDS = 28
+local MAX_CONCURRENT_SHUTDOWN_SAVES = 10
 
 export type PlayerData = {
 	Coins: number,
@@ -253,20 +254,40 @@ function PlayerDataService.Init()
 		end
 	end)
 
-	-- Wait for saves already started by PlayerRemoving and start one for remaining players.
+	-- Wait for saves already started by PlayerRemoving and save remaining players with bounded
+	-- concurrency so an initial burst does not overflow Roblox's 30-request DataStore queue.
 	-- Roblox waits up to 30 seconds for BindToClose callbacks.
 	game:BindToClose(function()
 		local deadline = os.clock() + SHUTDOWN_SAVE_BUDGET_SECONDS
+		local queuedPlayers: { Player } = {}
 		for _, player in Players:GetPlayers() do
 			if finalSaveState[player] == nil and sessionData[player] ~= nil then
-				task.spawn(PlayerDataService.saveData, player)
+				table.insert(queuedPlayers, player)
 			end
 		end
+
+		local nextIndex = 1
+		while nextIndex <= #queuedPlayers and os.clock() < deadline do
+			while nextIndex <= #queuedPlayers and inFlightSaves < MAX_CONCURRENT_SHUTDOWN_SAVES do
+				local player = queuedPlayers[nextIndex]
+				nextIndex += 1
+				if finalSaveState[player] == nil and sessionData[player] ~= nil then
+					task.spawn(PlayerDataService.saveData, player)
+				end
+			end
+			if nextIndex <= #queuedPlayers then
+				task.wait()
+			end
+		end
+
 		while inFlightSaves > 0 and os.clock() < deadline do
 			task.wait()
 		end
-		if inFlightSaves > 0 then
-			warn(`[PlayerDataService] Shutdown deadline reached with {inFlightSaves} final saves still in flight`)
+
+		local queuedRemaining = (#queuedPlayers - nextIndex) + 1
+		local unfinishedSaves = inFlightSaves + queuedRemaining
+		if unfinishedSaves > 0 then
+			warn(`[PlayerDataService] Shutdown deadline reached with {unfinishedSaves} final saves unfinished ({inFlightSaves} in flight, {queuedRemaining} queued)`)
 		end
 	end)
 end

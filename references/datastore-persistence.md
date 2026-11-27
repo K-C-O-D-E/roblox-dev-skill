@@ -578,20 +578,38 @@ Roblox status):
 
 ### Migration: DataStore2 → ProfileStore
 
-1. Start the ProfileStore session, but block gameplay (do not expose the profile to game systems) until migration completes
+1. Stop all legacy DataStore2 writers before migration starts, then start the ProfileStore session and block gameplay (do not expose the profile to game systems) until migration completes
 2. Call `oldStore:SetBackup(3)` to bound DataStore2's internal retries (without `SetBackup`, DataStore2 retries failed reads indefinitely), then read via `oldStore:Get(nil)` inside `pcall` and verify `not oldStore:IsBackup()`
-3. Treat only `nil` (with `not oldStore:IsBackup()`) as a verified absent record. If `oldData ~= nil`, validate that it is a table with valid expected fields before modifying `profile.Data`; reject unrecognized scalars or malformed fields so legacy data is never skipped permanently
-4. Set `profile.Data.migrated = true` only after copying validated data or confirming absence (`oldData == nil` with `not oldStore:IsBackup()`). If the read errors, returns a backup, or returns an unrecognized value, end the session and kick the player without setting `migrated = true`
+3. If `oldData == nil` (with `not oldStore:IsBackup()`), verify genuine absence by checking DataStore2's `OrderedBackups` index (`DataStoreService:GetOrderedDataStore("PlayerSave/" .. player.UserId):GetSortedAsync(false, 1):GetCurrentPage()[1]`). If an index entry exists, the latest indexed value is missing and older backups may still be recoverable: refuse migration without setting `migrated = true`. If `oldData ~= nil`, validate that it is a table with valid expected fields before modifying `profile.Data`; reject unrecognized scalars or malformed fields so legacy data is never skipped permanently
+4. Set `profile.Data.migrated = true` only after copying validated data or confirming genuine absence (`oldData == nil`, `not oldStore:IsBackup()`, and no `OrderedBackups` index entry). If any read errors, returns a backup, finds an index entry with a missing value, or returns an unrecognized value, end the session and kick the player without setting `migrated = true`
 
 <!-- skilltest: requires DataStore2; expect datastore2-migrates -->
 ```luau
 --!strict
--- Run this BEFORE exposing `profile` to game systems so the player cannot play with unmigrated data.
--- Returns true only when migration succeeded or the legacy record was verified absent.
+-- Run this AFTER disabling legacy DataStore2 writers and BEFORE exposing `profile` to game systems
+-- so the player cannot play with unmigrated data.
+-- Returns true only when migration succeeded or the legacy record was verified genuinely absent.
+local DataStoreService = game:GetService("DataStoreService")
+local LEGACY_STORE_NAME = "PlayerSave"
 local LEGACY_READ_RETRIES = 3
 
 local function isFiniteNumber(value: any): boolean
     return typeof(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+-- Under DataStore2's default OrderedBackups method, Get() can return nil without IsBackup()
+-- if the OrderedDataStore has a version index whose value key is missing. Check the index
+-- directly so recoverable older backups are never skipped permanently.
+local function hasLegacyBackupIndex(userId: number): (boolean, boolean)
+    local ok, latestEntry = pcall(function()
+        local indexStore = DataStoreService:GetOrderedDataStore(`{LEGACY_STORE_NAME}/{userId}`)
+        return indexStore:GetSortedAsync(false, 1):GetCurrentPage()[1]
+    end)
+    if not ok then
+        warn(`[DataStore2Migration] Index check failed for {userId}: {latestEntry}`)
+        return false, false
+    end
+    return true, latestEntry ~= nil
 end
 
 local function migrateFromDataStore2(player: Player, profile: any): boolean
@@ -600,7 +618,7 @@ local function migrateFromDataStore2(player: Player, profile: any): boolean
     end
 
     local DataStore2 = require(game:GetService("ServerStorage"):WaitForChild("DataStore2") :: ModuleScript) -- legacy module
-    local oldStore = DataStore2("PlayerSave", player)
+    local oldStore = DataStore2(LEGACY_STORE_NAME, player)
     -- Bound DataStore2 retries so failed reads do not stall join while ProfileStore holds a session.
     oldStore:SetBackup(LEGACY_READ_RETRIES)
 
@@ -617,7 +635,15 @@ local function migrateFromDataStore2(player: Player, profile: any): boolean
     end
 
     if oldData == nil then
-        -- Verified absent legacy key (not a backup): avoid repeat DataStore2 reads on future joins.
+        local indexOk, hasIndex = hasLegacyBackupIndex(player.UserId)
+        if not indexOk then
+            return false
+        end
+        if hasIndex then
+            warn(`[DataStore2Migration] Backup index exists for {player.UserId} but latest value is nil; refusing to mark migrated`)
+            return false
+        end
+        -- Verified genuinely absent legacy key (no OrderedBackups index and not a backup).
         profile.Data.migrated = true
         return true
     end
