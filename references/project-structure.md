@@ -221,14 +221,15 @@ local PlayerDataService = {}
 local playerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
 -- Key session state by Player instance (not UserId) so an old departure save never clears a rejoined session.
 local sessionData: { [Player]: PlayerData } = {}
-local finalSaveState: { [Player]: "saving" | "saved" } = {}
+local finalSaveState: { [Player]: "queued" | "saving" | "saved" } = {}
 local savingByUserId: { [number]: boolean } = {}
-local inFlightSaves = 0
+local activeSaves = 0
+local pendingSaves = 0 -- players currently "queued" or "saving"
 local SAVE_ATTEMPTS = 3
 local BASE_RETRY_DELAY = 1 -- seconds
 local MAX_RETRY_DELAY = 8 -- seconds
 local SHUTDOWN_SAVE_BUDGET_SECONDS = 28
-local MAX_CONCURRENT_SHUTDOWN_SAVES = 10
+local MAX_CONCURRENT_SAVES = 10
 
 export type PlayerData = {
 	Coins: number,
@@ -254,40 +255,21 @@ function PlayerDataService.Init()
 		end
 	end)
 
-	-- Wait for saves already started by PlayerRemoving and save remaining players with bounded
-	-- concurrency so an initial burst does not overflow Roblox's 30-request DataStore queue.
-	-- Roblox waits up to 30 seconds for BindToClose callbacks.
+	-- Wait for saves already started by PlayerRemoving and start one for remaining players.
+	-- Both callbacks share saveData's MAX_CONCURRENT_SAVES cap, and Roblox waits up to 30 seconds.
 	game:BindToClose(function()
 		local deadline = os.clock() + SHUTDOWN_SAVE_BUDGET_SECONDS
-		local queuedPlayers: { Player } = {}
 		for _, player in Players:GetPlayers() do
 			if finalSaveState[player] == nil and sessionData[player] ~= nil then
-				table.insert(queuedPlayers, player)
+				task.spawn(PlayerDataService.saveData, player)
 			end
 		end
-
-		local nextIndex = 1
-		while nextIndex <= #queuedPlayers and os.clock() < deadline do
-			while nextIndex <= #queuedPlayers and inFlightSaves < MAX_CONCURRENT_SHUTDOWN_SAVES do
-				local player = queuedPlayers[nextIndex]
-				nextIndex += 1
-				if finalSaveState[player] == nil and sessionData[player] ~= nil then
-					task.spawn(PlayerDataService.saveData, player)
-				end
-			end
-			if nextIndex <= #queuedPlayers then
-				task.wait()
-			end
-		end
-
-		while inFlightSaves > 0 and os.clock() < deadline do
+		while pendingSaves > 0 and os.clock() < deadline do
 			task.wait()
 		end
-
-		local queuedRemaining = (#queuedPlayers - nextIndex) + 1
-		local unfinishedSaves = inFlightSaves + queuedRemaining
-		if unfinishedSaves > 0 then
-			warn(`[PlayerDataService] Shutdown deadline reached with {unfinishedSaves} final saves unfinished ({inFlightSaves} in flight, {queuedRemaining} queued)`)
+		if pendingSaves > 0 then
+			local queuedSaves = pendingSaves - activeSaves
+			warn(`[PlayerDataService] Shutdown deadline reached with {pendingSaves} final saves unfinished ({activeSaves} active, {queuedSaves} queued)`)
 		end
 	end)
 end
@@ -322,7 +304,7 @@ end
 
 function PlayerDataService.saveData(player: Player): boolean
 	if finalSaveState[player] ~= nil then
-		return false -- final save already in progress or completed for this Player session
+		return false -- final save already queued, in progress, or completed for this Player session
 	end
 	local data = sessionData[player]
 	if not data then
@@ -330,9 +312,18 @@ function PlayerDataService.saveData(player: Player): boolean
 	end
 
 	local userId = player.UserId
-	finalSaveState[player] = "saving"
+	finalSaveState[player] = "queued"
 	savingByUserId[userId] = true
-	inFlightSaves += 1
+	pendingSaves += 1
+
+	-- Share one concurrency cap across PlayerRemoving and BindToClose so bursts stay under
+	-- Roblox's 30-request DataStore queue limit.
+	while activeSaves >= MAX_CONCURRENT_SAVES do
+		task.wait()
+	end
+
+	finalSaveState[player] = "saving"
+	activeSaves += 1
 
 	local saved = false
 	for attempt = 1, SAVE_ATTEMPTS do
@@ -362,7 +353,8 @@ function PlayerDataService.saveData(player: Player): boolean
 	sessionData[player] = nil
 	savingByUserId[userId] = nil
 	finalSaveState[player] = if player:IsDescendantOf(Players) then "saved" else nil
-	inFlightSaves -= 1
+	activeSaves -= 1
+	pendingSaves -= 1
 	return saved
 end
 
