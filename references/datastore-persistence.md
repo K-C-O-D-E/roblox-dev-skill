@@ -446,6 +446,7 @@ Players.PlayerRemoving:Connect(onPlayerRemoving)
 --!strict
 -- Track every final save (from PlayerRemoving or shutdown) in one registry so
 -- BindToClose waits for saves already in flight and starts each final save once.
+local SHUTDOWN_SAVE_BUDGET_SECONDS = 28
 local finalSaveState: { [Player]: "saving" | "saved" } = {}
 local inFlightSaves = 0
 
@@ -475,7 +476,7 @@ end)
 game:BindToClose(function()
     -- Wait for saves already started by PlayerRemoving and start one for remaining players.
     -- Roblox waits up to 30s for bound functions to complete.
-    local deadline = os.clock() + 28
+    local deadline = os.clock() + SHUTDOWN_SAVE_BUDGET_SECONDS
     for _, player in Players:GetPlayers() do
         if finalSaveState[player] == nil then
             task.spawn(saveFinalOnce, player)
@@ -484,6 +485,10 @@ game:BindToClose(function()
 
     while inFlightSaves > 0 and os.clock() < deadline do
         task.wait()
+    end
+
+    if inFlightSaves > 0 then
+        warn(`[DataService] Shutdown deadline reached with {inFlightSaves} final saves still in flight`)
     end
 end)
 ```
