@@ -8,20 +8,20 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 |---|---|---|---|---|---|---|---|
 | `SKILL.md` | 26 | 5 | 7 | 6 | 18 | 0 | 16 |
 | `references/agent-safety.md` | 12 | 10 | 0 | 0 | 23 | 0 | 4 |
-| `references/datastore-persistence.md` | 6 | 13 | 0 | 4 | 9 | 0 | 6 |
+| `references/datastore-persistence.md` | 6 | 14 | 0 | 4 | 9 | 0 | 6 |
 | `references/file-formats-and-assets.md` | 11 | 11 | 1 | 1 | 1 | 0 | 5 |
 | `references/legacy-migration.md` | 152 | 36 | 62 | 11 | 3 | 0 | 25 |
 | `references/luau-fundamentals.md` | 28 | 13 | 1 | 56 | 3 | 0 | 12 |
 | `references/mcp-integration.md` | 106 | 34 | 4 | 4 | 13 | 0 | 16 |
-| `references/monetization.md` | 7 | 24 | 0 | 1 | 2 | 0 | 10 |
+| `references/monetization.md` | 6 | 25 | 0 | 1 | 2 | 0 | 10 |
 | `references/networking.md` | 25 | 33 | 1 | 0 | 4 | 0 | 10 |
 | `references/performance-optimization.md` | 64 | 26 | 4 | 7 | 1 | 0 | 11 |
 | `references/project-structure.md` | 15 | 14 | 6 | 2 | 3 | 0 | 4 |
 | `references/security-hardening.md` | 27 | 37 | 3 | 0 | 7 | 0 | 13 |
 | `references/studio-plugins-and-limits.md` | 18 | 1 | 1 | 1 | 9 | 0 | 0 |
 | `references/ui-systems.md` | 17 | 13 | 3 | 1 | 3 | 0 | 5 |
-| `references/worked-examples.md` | 23 | 9 | 3 | 1 | 23 | 0 | 1 |
-| **total** | **537** | **279** | **96** | **95** | **122** | **0** | **138** |
+| `references/worked-examples.md` | 22 | 9 | 3 | 1 | 23 | 3 | 1 |
+| **total** | **535** | **281** | **96** | **95** | **122** | **3** | **138** |
 
 ## Verified claims
 
@@ -220,9 +220,9 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/mcp-integration.md`: `upload_image` uploads a local image file \| It uploads a **batch from HTTP(S) URLs** and returns an imagePath→assetId map. Local files go through `store_image` | docs | Schemas of upload_image and store_image. (MCP tool schemas of this session (Studio 0.742)) |
 | `references/mcp-integration.md`: `http_get` fetches any URL from Studio \| **Allowlisted** to Roblox docs domains, and the URL must end in `.md` or be `llms.txt`. `llms-full.txt` and `openapi.j | studio | Allowlist enforced; llms-full.txt/openapi.json rejected. (execute_luau / multi_edit runs, 2026-10-11) |
 | `references/mcp-integration.md`: `set_active_studio` is a tool \| Does not exist. Targeting is per call via `studio_id`. (Corrected in v2.7.0, kept here as a guard.) \| Official docs | studio | No such tool; every call takes studio_id. (MCP tool schemas of this session (Studio 0.742); Roblox/creator-docs studio/mcp.md (read 2026-10-11)) |
-| `references/monetization.md`: **This handler is not yet idempotent.** `ProcessReceipt` runs again for every unresolved purchase | docs | ProcessReceipt is called for unresolved purchases when the user joins. (Roblox/creator-docs MarketplaceService.yaml) |
-| `references/monetization.md`: grant: see `worked-examples.md` §6 for the `UpdateAsync` pattern, tested in Studio 0.742. Roblox's | studio | 5/5 PASS 2026-10-11. (expect/receipt-idempotent) |
-| `references/monetization.md`: own sample checks only `if success then`, although its warning says a handler must return `true`. | docs | pcall(handler) then if success then; warning must return true. (creator-docs developer-products.md) |
+| `references/monetization.md`: **This handler is not yet idempotent or durable.** `ProcessReceipt` runs again for every unresolved purchase | docs | ProcessReceipt is called for unresolved purchases when the user joins. (Roblox/creator-docs MarketplaceService.yaml) |
+| `references/monetization.md`: pattern. Roblox's own sample checks only `if success then`, although its warning says a handler | docs | Official sample checks pcall success; warning says handler must return true; store PurchaseId in durable player record. (Roblox/creator-docs developer-products.md; player-data-purchasing.md) |
+| `references/monetization.md`: together inside the player's durable record (saved before returning `PurchaseGranted`, with no | docs | Purchase must be persisted before PurchaseGranted; UpdateAsync transform may be called multiple times. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; GlobalDataStore.md) |
 | `references/monetization.md`: **Added May 2026** — Official replacement for cross-game donation patterns. | docs | Transfers API introduced 2026-05-04. (DevForum topic 4618396 (Roblox, 2026-05-04) and its FAQ update) |
 | `references/monetization.md`: Call `PromptRobuxTransferAsync` **server-side only** | docs | "This is a server-only method and must be called from a Script with RunContext Server". (Roblox/creator-docs MarketplaceService.yaml) |
 | `references/monetization.md`: Only return `Enum.ReceiptDecision.Processed` after successfully logging | docs | BindReceiptHandler: Processed means benefits granted; NotProcessedYet redelivers. (Roblox/creator-docs MarketplaceService.yaml) |
@@ -366,11 +366,10 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/worked-examples.md`: **not `PluginOrOpenCloud`**: those writes fail with "lacking capability PluginOrOpenCloud" even | studio | Writes failed with lacking capability PluginOrOpenCloud. (SkillTestClaimProbe 2026-10-11) |
 | `references/worked-examples.md`: when `Security` is `None`. Treat `Security: None` + `PluginOrOpenCloud` as plugin-only. | studio | Every such member failed from a Script. (SkillTestClaimProbe 2026-10-11) |
 | `references/worked-examples.md`: `Tags` — `Deprecated`, `Yields`, `ReadOnly`, `NotScriptable`. | dump | Member tag names as in the dump. (API dump 0.742) |
-| `references/worked-examples.md`: **A handler returns `true` only once the item is really granted.** Roblox's own sample checks | docs | Official sample: pcall(handler, ...) then "if success then"; warning: handlers "must return true". (Roblox/creator-docs production/monetization/developer-products.md; MarketplaceService.yaml) |
-| `references/worked-examples.md`: only that the handler did not *error* (`if success then`), although the warning under it says | docs | As above. (Roblox/creator-docs production/monetization/developer-products.md; MarketplaceService.yaml) |
-| `references/worked-examples.md`: purchase each time the player joins, and a purchase only counts as resolved once | docs | Called for unresolved purchases when "A user joins the server". (MarketplaceService.yaml ProcessReceipt) |
+| `references/worked-examples.md`: **A handler mutates only the serializable player record, with no side effects.** `GlobalDataStore:UpdateAsync()` can invoke its transform function more than onc | docs | GlobalDataStore:UpdateAsync() will call the function again, discarding the result of the previous call, if another server changed the key. (Roblox/creator-docs reference/engine/classes/GlobalDataStore.md) |
+| `references/worked-examples.md`: **Make it idempotent and durable through the single session writer.** `ProcessReceipt` runs again for every *unresolved* purchase | docs | Store PurchaseId and grant in the player's durable record saved before returning PurchaseGranted. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; MarketplaceService.yaml) |
+| `references/worked-examples.md`: **Return `NotProcessedYet` whenever you are unsure.** The purchase stays unresolved and is | docs | NotProcessedYet keeps the purchase unresolved for retry on next join. (Roblox/creator-docs MarketplaceService.yaml ProcessReceipt) |
 | `references/worked-examples.md`: retried when the player next joins; it is never refunded or dropped by that answer. | docs | "Unresolved developer product purchases are not removed or refunded". (MarketplaceService.yaml ProcessReceipt) |
-| `references/worked-examples.md`: (Run exactly this way in Studio 0.742, 2026-10-11, against a real DataStore: all five matched.) Use | studio | expect/receipt-idempotent.luau 5/5 PASS in the harness (2026-10-11). (Studio harness expectations 2026-10-11; metadata.json 2.16.0 verified_by (worked-example verifications run in Studio 0.742)) |
 | `references/worked-examples.md`: newer server already upgraded. It must not "fix" it down or save over it: reject the load. | studio | expect/schema-migrates: a v4 save errors. (Studio harness expectations 2026-10-11) |
 | `references/worked-examples.md`: `Coins` key; a v3 save comes back unchanged; a v4 save errors. Then round-trip one save through a | studio | expect/schema-migrates 11/11 PASS; load-new-player 2/2. (Studio harness expectations 2026-10-11) |
 | `references/worked-examples.md`: way in Studio 0.742, 2026-10-11: all four matched.) | studio | As above. (Studio harness expectations 2026-10-11; metadata.json 2.16.0 verified_by (worked-example verifications run in Studio 0.742)) |
@@ -1173,3 +1172,4 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/worked-examples.md`: in Studio 0.748.0.7481526 Play `Client`) → `start_stop_play` to stop. | studio | Observed in Studio 0.748.0.7481526 Play Client. (Studio 0.748.0.7481526) |
 | `references/worked-examples.md`: `ThickHits > 0`, and `PlayerTriggered == true`; `get_console_output` reports 0 errors; | studio | Measured in Studio 0.748 playtest: ThinHits=0, ThickHits=6800, PlayerTriggered=true, 0 console errors. (Studio 0.748.0.7481526 physics_samples.luau) |
 | `references/worked-examples.md`: A host whose live tool list still exposes `list_skills` / `skill` (Studio 0.745–0.746) → use | docs | 0.745-0.746 hosts exposed list_skills/skill; 0.748 exposes list_roblox_skills/get_roblox_skill. (MCP schemas 0.745-0.746 vs 0.748) |
+| `references/datastore-persistence.md`: **Bind to close** — for raw DataStore saves, wait for all spawned save tasks to finish inside `game:BindToClose` (Roblox waits up to 30 seconds | docs | The experience server waits 30 seconds for all bound functions to stop running before it shuts down. (Roblox/creator-docs reference/engine/classes/DataModel.md) |

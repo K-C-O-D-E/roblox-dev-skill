@@ -328,52 +328,435 @@ This example uses `ProcessReceipt`. The official reference now presents
 
 1. **One script owns `ProcessReceipt`.** Setting it from a second script silently replaces the
    first.
-2. **A handler returns `true` only once the item is really granted.** Roblox's own sample checks
-   only that the handler did not *error* (`if success then`), although the warning under it says
-   the handler must return `true`. Check both: `ok and granted == true`.
-3. **Make it idempotent on `PurchaseId`.** `ProcessReceipt` runs again for every *unresolved*
-   purchase each time the player joins, and a purchase only counts as resolved once
-   `PurchaseGranted` is returned **and** recorded on Roblox's side. A server that stops between
-   granting and that record will see the same receipt again. Record the `PurchaseId` and the grant
-   in one `UpdateAsync`, so a repeat delivery is answered without granting twice.
-4. **Return `NotProcessedYet` whenever you are unsure.** The purchase stays unresolved and is
-   retried when the player next joins; it is never refunded or dropped by that answer.
+2. **A handler mutates only the serializable player record, with no side effects.** `GlobalDataStore:UpdateAsync()` can invoke its transform function more than once when another server writes the same key, discarding the earlier call's return value. Never mutate `leaderstats` or grant in-memory items inside the transform function, or a retry can grant twice.
+3. **Make it idempotent and durable through the single session writer.** `ProcessReceipt` runs again for every *unresolved* purchase each time the player joins, and a purchase counts as resolved only once `PurchaseGranted` is returned **and** recorded on Roblox's side. Store the granted value **and** the `PurchaseId` together in the **same player record** that holds earned coins, spending and inventory, and write that record from **one session owner** only (`ReceiptHandler` below, or a session-locked ProfileStore record saved before returning `PurchaseGranted`). This is the design of the official *Player data and purchasing* guide. `ReceiptHandler` replaces each other writer of `PlayerData_v1`, for example `PlayerDataService` in `project-structure.md`. A second writer saves its own in-memory copy over the record and removes the grant and `ProcessedReceipts`. The transform starts from a deep copy of the live session, so a transform retry or a failed write never changes the session, and a nested table such as `Inventory` gets the grant exactly once. Preserve all unrelated fields, keep unsaved gameplay earnings intact, and mirror the updated session balance into `leaderstats`. This example has no cross-server session lock, so it is safe only while one server holds the player session. A game with teleports or server hops must use a session-locked store instead (ProfileStore, see *Session Locking* in `datastore-persistence.md`). Never evict old receipt IDs to make room for new ones: if a record reaches its storage cap, cancel the write (`NotProcessedYet`) until receipt history is archived or migrated safely.
+4. **Return `NotProcessedYet` whenever you are unsure.** The purchase stays unresolved and is retried when the player next joins; it is never refunded or dropped by that answer.
+5. **Connect the session owner to the player lifecycle.** `PlayerSessions.server.luau` below loads
+   each session on `PlayerAdded` and for each player already in the server, autosaves, saves and
+   unloads each session on `PlayerRemoving`, and saves each loaded session in `BindToClose`. Without
+   it, `process` finds no session and returns `NotProcessedYet` for each purchase.
 
 ```luau
 --!strict
 --@skilltest: provides ReceiptHandler
 -- ModuleScript "ReceiptHandler" in ServerScriptService
+-- The one session owner of PlayerData_v1. It loads, changes and saves each player record, and it
+-- commits each receipt grant together with its PurchaseId in that record. It replaces each other
+-- writer of PlayerData_v1, for example PlayerDataService in project-structure.md.
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 
-local purchaseHistory = DataStoreService:GetDataStore("PurchaseHistory_v1")
+local playerStore: DataStore = DataStoreService:GetDataStore("PlayerData_v1")
+local MAX_STORED_RECEIPTS = 500
+local SAVE_ATTEMPTS = 3
+local BASE_RETRY_DELAY = 1 -- seconds
+local MAX_RETRY_DELAY = 8 -- seconds
+
+export type PlayerRecord = {
+	Coins: number,
+	ProcessedReceipts: { string },
+	[string]: any,
+}
+type GrantHandler = (record: PlayerRecord) -> boolean
 
 local ReceiptHandler = {}
 
--- productId -> grant function. Return true ONLY once the item is really granted.
--- It runs inside an UpdateAsync callback, so it must not yield.
-ReceiptHandler.handlers = {} :: { [number]: (player: Player) -> boolean }
+-- productId -> pure transform on a player record.
+-- Return true ONLY when the grant was applied to `record`.
+-- Runs inside UpdateAsync, and once on a copy of the live session after the commit:
+-- must NOT yield and must NOT mutate Instances or external state.
+ReceiptHandler.handlers = {} :: { [number]: GrantHandler }
+
+local sessions: { [Player]: PlayerRecord } = {}
+local writingPlayers: { [Player]: boolean } = {}
+local dirtyVersion: { [Player]: number } = {}
+local savedVersion: { [Player]: number } = {}
+
+-- Optional seam for isolated tests (never swap stores in production gameplay).
+function ReceiptHandler.setDataStore(store: DataStore)
+	playerStore = store
+end
+
+local function isValidId(value: any): boolean
+	return typeof(value) == "number"
+		and value == value
+		and value ~= math.huge
+		and value ~= -math.huge
+		and math.floor(value) == value
+end
+
+local function hasReceipt(receipts: { string }, purchaseId: string): boolean
+	for _, id in receipts do
+		if id == purchaseId then
+			return true
+		end
+	end
+	return false
+end
+
+-- Copies each nested table too, so that the copy and the source never hold the same table.
+-- `copies` maps each source table to its copy. A repeated table gets one copy, and a cycle ends.
+local function deepClone(value: any, copies: { [any]: any }): any
+	if typeof(value) ~= "table" then
+		return value
+	end
+	local existing = copies[value]
+	if existing ~= nil then
+		return existing
+	end
+	local copy = {}
+	copies[value] = copy
+	for key, item in value do
+		copy[deepClone(key, copies)] = deepClone(item, copies)
+	end
+	return copy
+end
+
+local function cloneRecord(oldData: any): PlayerRecord?
+	if oldData == nil then
+		-- The fields of PlayerData in project-structure.md, plus the receipt history.
+		return { Coins = 0, Level = 1, Inventory = {}, ProcessedReceipts = {} }
+	end
+	if typeof(oldData) ~= "table" then
+		return nil -- reject corrupt non-table data rather than wiping it
+	end
+
+	-- A deep copy, so that a handler that changes a nested table (Inventory) never changes the source.
+	local copy: { [string]: any } = deepClone(oldData, {})
+
+	local rawCoins = copy.Coins
+	if rawCoins == nil then
+		copy.Coins = 0
+	elseif typeof(rawCoins) ~= "number" or rawCoins ~= rawCoins or rawCoins == math.huge or rawCoins == -math.huge then
+		return nil -- reject corrupt coin balance
+	end
+
+	local rawReceipts = copy.ProcessedReceipts
+	local receipts: { string } = {}
+	if rawReceipts ~= nil then
+		if typeof(rawReceipts) ~= "table" then
+			return nil -- reject corrupt receipt history
+		end
+		local count = 0
+		for key, id in rawReceipts do
+			if typeof(key) ~= "number" or key < 1 or math.floor(key) ~= key or typeof(id) ~= "string" or id == "" then
+				return nil
+			end
+			count += 1
+		end
+		if count ~= #rawReceipts then
+			return nil -- reject sparse or malformed array
+		end
+		for index = 1, count do
+			receipts[index] = rawReceipts[index]
+		end
+	end
+
+	copy.ProcessedReceipts = receipts
+	return copy :: PlayerRecord
+end
+
+local function syncLeaderstats(player: Player, record: PlayerRecord)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local coins = leaderstats and leaderstats:FindFirstChild("Coins")
+	if coins and coins:IsA("IntValue") then
+		coins.Value = record.Coins
+	end
+end
+
+-- Runs `work` while this server holds the write lock of the player. The lock is released also
+-- when `work` raises an error, so that a later call for the player never waits forever.
+local function withWriteLock(player: Player, work: () -> any): (boolean, any)
+	while writingPlayers[player] do
+		task.wait()
+	end
+	writingPlayers[player] = true
+	local isOk, result = pcall(work)
+	writingPlayers[player] = nil
+	return isOk, result
+end
+
+-- Keeps the UserIds and the metadata of the key, and tags a new key with the UserId of the player.
+local function keyMetadata(player: Player, keyInfo: DataStoreKeyInfo?)
+	local userIds: { number } = if keyInfo then keyInfo:GetUserIds() else {}
+	if #userIds == 0 and player.UserId > 0 then
+		userIds = { player.UserId }
+	end
+	local metadata = if keyInfo then keyInfo:GetMetadata() else {}
+	return userIds, metadata
+end
+
+-- Writes the live session over the stored record. The live session is the source of truth: a grant
+-- and its PurchaseId enter the session together, so a full write never separates them.
+local function writeSession(player: Player)
+	local writtenVersion: number? = nil
+	local committed = playerStore:UpdateAsync(`Player_{player.UserId}`, function(oldData: any, keyInfo: DataStoreKeyInfo?)
+		writtenVersion = nil
+		if not cloneRecord(oldData) then
+			return nil -- do not overwrite corrupt data
+		end
+		local live = sessions[player]
+		local candidate = if live then cloneRecord(live) else nil
+		if not candidate then
+			return nil
+		end
+		writtenVersion = dirtyVersion[player] or 0
+		local userIds, metadata = keyMetadata(player, keyInfo)
+		return candidate, userIds, metadata
+	end)
+	if committed ~= nil and writtenVersion ~= nil then
+		savedVersion[player] = writtenVersion
+	end
+end
+
+-- Commits the grant and its PurchaseId in one UpdateAsync call, and returns a copy of the committed
+-- record plus the dirty version captured in the transform. The transform starts from a deep copy
+-- of the live session, so that a transform retry or a failed write never changes the session.
+local function commitGrant(player: Player, purchaseId: string, handler: GrantHandler): (PlayerRecord?, number)
+	local deferReason = "write cancelled"
+	local capturedVersion = dirtyVersion[player] or 0
+	local committed = playerStore:UpdateAsync(`Player_{player.UserId}`, function(oldData: any, keyInfo: DataStoreKeyInfo?)
+		deferReason = "write cancelled"
+		if not cloneRecord(oldData) then
+			deferReason = "corrupt saved record"
+			return nil -- corrupt record: cancel write so nothing is overwritten
+		end
+		local live = sessions[player]
+		local candidate = if live then cloneRecord(live) else nil
+		if not candidate then
+			deferReason = "player session unloaded or invalid"
+			return nil
+		end
+		if #candidate.ProcessedReceipts >= MAX_STORED_RECEIPTS then
+			-- Never evict old receipt IDs: Roblox can redeliver an older unresolved receipt.
+			-- Defer new grants until receipt history is archived or migrated safely.
+			deferReason = `receipt history cap ({MAX_STORED_RECEIPTS}) reached`
+			return nil
+		end
+		if handler(candidate) ~= true then
+			deferReason = "product handler returned false"
+			return nil -- cancel the write: purchase stays unresolved and retries later
+		end
+		capturedVersion = dirtyVersion[player] or 0
+		table.insert(candidate.ProcessedReceipts, purchaseId)
+		local userIds, metadata = keyMetadata(player, keyInfo)
+		return candidate, userIds, metadata
+	end)
+	local record = if typeof(committed) == "table" then cloneRecord(committed) else nil
+	if not (record and hasReceipt(record.ProcessedReceipts, purchaseId)) then
+		warn(`[ReceiptHandler] Deferred {purchaseId}: {deferReason}`)
+		return nil, capturedVersion
+	end
+	return record, capturedVersion
+end
+
+-- Applies a committed grant to a copy of the live session, then puts the copy in place of the
+-- session, so that gameplay changes made during the UpdateAsync yield stay. If the handler raises
+-- an error or returns false on that copy, the session takes the committed record. The paid grant
+-- stays, and only the gameplay changes made after the transform ran are lost.
+local function applyCommittedGrant(
+	player: Player,
+	purchaseId: string,
+	handler: GrantHandler,
+	committed: PlayerRecord,
+	capturedVersion: number
+)
+	local live = sessions[player]
+	if not live then
+		return -- the next loadSession reads the committed grant from the store
+	end
+	local updated = cloneRecord(live)
+	if updated then
+		local isOk, result = pcall(handler, updated)
+		if isOk and result == true then
+			table.insert(updated.ProcessedReceipts, purchaseId)
+			sessions[player] = updated
+			savedVersion[player] = capturedVersion
+			syncLeaderstats(player, updated)
+			return
+		end
+		warn(`[ReceiptHandler] {purchaseId}: handler refused the live session ({result}). The session takes the committed record.`)
+	end
+	sessions[player] = committed
+	savedVersion[player] = dirtyVersion[player] or 0
+	syncLeaderstats(player, committed)
+end
+
+function ReceiptHandler.loadSession(player: Player): boolean
+	if sessions[player] then
+		return true -- already loaded, and a second load must not replace newer session state
+	end
+	local playerKey = `Player_{player.UserId}`
+	local ok, rawData = pcall(function()
+		return playerStore:GetAsync(playerKey)
+	end)
+	if not ok then
+		warn(`[ReceiptHandler] Failed to load session for {player.UserId}: {rawData}`)
+		return false
+	end
+	if not player:IsDescendantOf(Players) then
+		return false -- player left while GetAsync yielded
+	end
+	if sessions[player] then
+		return true -- another load finished during the GetAsync yield
+	end
+	local record = cloneRecord(rawData)
+	if not record then
+		warn(`[ReceiptHandler] Corrupt saved record for {player.UserId}`)
+		return false
+	end
+	sessions[player] = record
+	dirtyVersion[player] = 0
+	savedVersion[player] = 0
+	syncLeaderstats(player, record)
+	return true
+end
+
+-- Returns a copy of the live session, so that only this module changes session state.
+function ReceiptHandler.getSessionRecord(player: Player): PlayerRecord?
+	local session = sessions[player]
+	return if session then cloneRecord(session) else nil
+end
+
+function ReceiptHandler.addCoins(player: Player, delta: number): boolean
+	local session = sessions[player]
+	if not session or typeof(delta) ~= "number" or delta ~= delta or delta == math.huge or delta == -math.huge then
+		return false
+	end
+	if delta ~= 0 then
+		session.Coins += delta
+		dirtyVersion[player] = (dirtyVersion[player] or 0) + 1
+		syncLeaderstats(player, session)
+	end
+	return true
+end
+
+-- Saves the live session, with SAVE_ATTEMPTS tries and capped exponential backoff with jitter.
+-- With `unload`, the session is removed after the last try, also when each try failed.
+function ReceiptHandler.saveSession(player: Player, unload: boolean?): boolean
+	if not sessions[player] then
+		return false
+	end
+	local isLockOk, result = withWriteLock(player, function(): boolean
+		for attempt = 1, SAVE_ATTEMPTS do
+			if not sessions[player] then
+				return false -- another save unloaded the session while this call waited
+			end
+			local isSaved, err = pcall(writeSession, player)
+			if isSaved then
+				return true
+			end
+			warn(`[ReceiptHandler] Save attempt {attempt} of {SAVE_ATTEMPTS} failed for {player.UserId}: {err}`)
+			if attempt < SAVE_ATTEMPTS then
+				local backoff = math.min(BASE_RETRY_DELAY * (2 ^ (attempt - 1)), MAX_RETRY_DELAY)
+				local jitter = math.random() * 0.5
+				task.wait(backoff + jitter)
+			end
+		end
+		return false
+	end)
+	local isSaved = isLockOk and result == true
+	if unload and sessions[player] then
+		if not isSaved then
+			-- Paid grants are safe, because process commits each grant before it returns PurchaseGranted.
+			-- Only the gameplay changes after the last successful save are lost.
+			warn(`[ReceiptHandler] Unloading {player.UserId} without a successful save`)
+		end
+		sessions[player] = nil
+		dirtyVersion[player] = nil
+		savedVersion[player] = nil
+	end
+	return isSaved
+end
+
+-- Periodic autosave helper: skips clean sessions and skips players whose write lock is already held
+-- so autosave neither wastes DataStore budget nor stacks waiting threads.
+function ReceiptHandler.autosaveSession(player: Player): boolean
+	if not sessions[player] or writingPlayers[player] then
+		return false
+	end
+	if (dirtyVersion[player] or 0) == (savedVersion[player] or 0) then
+		return false
+	end
+	return ReceiptHandler.saveSession(player, false)
+end
+
+-- Saves and unloads each loaded session in parallel, and returns when each save has ended.
+-- It reads `sessions`, not Players:GetPlayers(), because a player whose leave save still runs can
+-- be missing from GetPlayers(). BindToClose calls it.
+function ReceiptHandler.saveAllSessions()
+	local players: { Player } = {}
+	for player in sessions do
+		table.insert(players, player)
+	end
+	local pending = #players
+	for _, player in players do
+		task.spawn(function()
+			pcall(ReceiptHandler.saveSession, player, true)
+			pending -= 1
+		end)
+	end
+	while pending > 0 do
+		task.wait()
+	end
+end
 
 function ReceiptHandler.process(receiptInfo: { [string]: any }): Enum.ProductPurchaseDecision
-	local purchaseId = tostring(receiptInfo.PurchaseId)
-	local ok, recorded = pcall(function()
-		return purchaseHistory:UpdateAsync(purchaseId, function(alreadyGranted: boolean?): boolean?
-			if alreadyGranted then
-				return true -- delivered again after an earlier grant: do not grant twice
-			end
-			local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
-			local handler = ReceiptHandler.handlers[receiptInfo.ProductId]
-			if not (player and handler and handler(player) == true) then
-				return nil -- cancel the write: the purchase stays unresolved and is retried
-			end
-			return true
-		end)
-	end)
-	if ok and recorded == true then
+	if typeof(receiptInfo) ~= "table" then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local playerId = receiptInfo.PlayerId
+	local productId = receiptInfo.ProductId
+	local purchaseId = receiptInfo.PurchaseId
+	if not isValidId(playerId) or not isValidId(productId) or typeof(purchaseId) ~= "string" or purchaseId == "" then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local player = Players:GetPlayerByUserId(playerId)
+	if not player then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local session = sessions[player]
+	local leaderstats = player:FindFirstChild("leaderstats")
+	if not (session and leaderstats and leaderstats:FindFirstChild("Coins")) then
+		return Enum.ProductPurchaseDecision.NotProcessedYet -- player session not ready yet
+	end
+
+	local handler = ReceiptHandler.handlers[productId]
+	if not handler then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local grantHandler: GrantHandler = handler
+
+	-- Fast idempotent path. The session takes a PurchaseId only from the store or after a
+	-- successful commit, so a PurchaseId in the session is durably granted.
+	if hasReceipt(session.ProcessedReceipts, purchaseId) then
+		syncLeaderstats(player, session)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-	if not ok then
-		warn(`[ReceiptHandler] {purchaseId}: {recorded}`)
+
+	local isLockOk, result = withWriteLock(player, function(): boolean
+		local live = sessions[player]
+		if not live then
+			return false
+		end
+		if hasReceipt(live.ProcessedReceipts, purchaseId) then
+			return true -- another call committed this PurchaseId while this call waited
+		end
+		local committed, capturedVersion = commitGrant(player, purchaseId, grantHandler)
+		if not committed then
+			return false
+		end
+		applyCommittedGrant(player, purchaseId, grantHandler, committed, capturedVersion)
+		return true
+	end)
+	if not isLockOk then
+		warn(`[ReceiptHandler] {purchaseId}: {result}`)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	if result == true then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 	return Enum.ProductPurchaseDecision.NotProcessedYet
 end
@@ -392,33 +775,111 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ReceiptHandler = require(ServerScriptService:WaitForChild("ReceiptHandler") :: ModuleScript)
 
 local COINS_100 = 111111111 -- your developer product ID
+local POTION = 222222222 -- your developer product ID
 
-ReceiptHandler.handlers[COINS_100] = function(player: Player): boolean
-	local leaderstats = player:FindFirstChild("leaderstats")
-	local coins = leaderstats and leaderstats:FindFirstChild("Coins")
-	if coins and coins:IsA("IntValue") then
-		coins.Value += 100
-		return true
+-- Pure record mutation only (no yields, no Instance side effects inside UpdateAsync).
+ReceiptHandler.handlers[COINS_100] = function(record: { Coins: number, ProcessedReceipts: { string }, [string]: any }): boolean
+	record.Coins += 100
+	return true
+end
+
+-- A nested table gets the grant too. The record is a deep copy, so this insert never reaches the
+-- live session before the commit.
+ReceiptHandler.handlers[POTION] = function(record: { Coins: number, ProcessedReceipts: { string }, [string]: any }): boolean
+	local inventory = record.Inventory
+	if typeof(inventory) ~= "table" then
+		inventory = {}
+		record.Inventory = inventory
 	end
-	return false -- not ready (no leaderstats yet): leave the purchase unresolved
+	table.insert(inventory, "Potion")
+	return true
 end
 
 MarketplaceService.ProcessReceipt = ReceiptHandler.process
 ```
 
+<!-- skilltest: skip binds player events and BindToClose and writes the real PlayerData_v1 store -->
+```luau
+--!strict
+--@skilltest: requires ReceiptHandler
+-- ServerScriptService/PlayerSessions.server.luau: loads, autosaves and saves each session
+local Players = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local ReceiptHandler = require(ServerScriptService:WaitForChild("ReceiptHandler") :: ModuleScript)
+
+local AUTOSAVE_INTERVAL = 120 -- seconds
+
+local function onPlayerAdded(player: Player)
+	if player:FindFirstChild("leaderstats") then
+		return -- PlayerAdded and the loop below can both see a player who joins during startup
+	end
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Parent = leaderstats
+	leaderstats.Parent = player
+	-- Never fall back to defaults after a failed load. The next save would overwrite the real record.
+	if not ReceiptHandler.loadSession(player) and player:IsDescendantOf(Players) then
+		player:Kick("Your data could not be loaded. Please rejoin.")
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, player in Players:GetPlayers() do
+	task.spawn(onPlayerAdded, player)
+end
+
+Players.PlayerRemoving:Connect(function(player: Player)
+	ReceiptHandler.saveSession(player, true)
+end)
+
+game:BindToClose(ReceiptHandler.saveAllSessions)
+
+task.spawn(function()
+	while true do
+		local players = Players:GetPlayers()
+		if #players == 0 then
+			task.wait(AUTOSAVE_INTERVAL)
+		else
+			-- Spread autosaves evenly across the interval and skip clean or busy sessions.
+			local step = AUTOSAVE_INTERVAL / #players
+			for _, player in players do
+				task.wait(step)
+				if player:IsDescendantOf(Players) then
+					task.spawn(ReceiptHandler.autosaveSession, player)
+				end
+			end
+		end
+	end
+end)
+```
+
 **Verification:** test the logic directly; you do not need a real purchase. In a playtest,
 `execute_luau` (Server) can `require` the module (it gets its own copy, so register a test handler
-on that copy) and call `process` with a fake receipt whose `PlayerId` is the test player:
+on that copy), point it at an isolated test store with `setDataStore`, seed an existing player
+record (for example `Coins = 500`, `Gems = 7`), load the session, add unsaved gameplay coins
+(`+25`), call `process` with fake receipts, and run `saveSession`. For rows 8 to 12, wrap the test
+store in a test double that simulates `UpdateAsync` failures. The rows are in the order of
+`tools/skill-test/expect/receipt-idempotent.luau`:
 
-| Call | Expected |
-|---|---|
-| New `PurchaseId`, handler returns `true` | `PurchaseGranted`, handler ran once |
-| The **same** `PurchaseId` again | `PurchaseGranted`, handler did **not** run again |
-| Handler returns `false` | `NotProcessedYet` |
-| Unknown `ProductId` | `NotProcessedYet` |
-| `PlayerId` of someone not in the server | `NotProcessedYet` |
+| # | Call | Expected |
+|---|---|---|
+| 1 | Malformed receipt (`{}` or missing IDs) | `NotProcessedYet` |
+| 2 | Session not loaded yet | `NotProcessedYet` |
+| 3 | Unknown `ProductId` | `NotProcessedYet` |
+| 4 | `PlayerId` of someone not in the server | `NotProcessedYet` |
+| 5 | New `COINS_100` `PurchaseId` with stored `Coins = 500`, `Gems = 7`, and `+25` unsaved earnings, then `saveSession` | `PurchaseGranted`, durable `Coins == 625`, `Gems == 7` preserved, `ProcessedReceipts` holds `PurchaseId` once after both grant and `saveSession` |
+| 6 | The **same** `PurchaseId` again | `PurchaseGranted`, handler does **not** run again, stored `Coins` stays `625`, `ProcessedReceipts` count stays `1` |
+| 7 | Handler returns `false` | `NotProcessedYet`. The store, the session and `leaderstats` keep `Coins == 625`, `Gems == 7` and 1 `PurchaseId` |
+| 8 | New `POTION` `PurchaseId`. `UpdateAsync` runs the transform, then raises an error before the write | `NotProcessedYet`. The store and the session hold 0 `Potion` |
+| 9 | The **same** `PurchaseId`. `UpdateAsync` runs the transform 2 times and writes the second result | `PurchaseGranted`. The store and the session each hold exactly 1 `Potion` |
+| 10 | `saveSession`, then the **same** `PurchaseId` a third time | `PurchaseGranted`. The store and the session each hold exactly 1 `Potion` |
+| 11 | A second `POTION` `PurchaseId`. `UpdateAsync` writes, then raises an error | `NotProcessedYet`. The session holds 1 `Potion` |
+| 12 | The **same** `PurchaseId` again, then `saveSession` | `PurchaseGranted`. The store and the session each hold exactly 2 `Potion`, 1 for each `PurchaseId` |
 
-(Run exactly this way in Studio 0.742, 2026-10-11, against a real DataStore: all five matched.) Use
+(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers each row.) Use
 `PurchaseId`s with a `test-` prefix so they cannot collide with real purchases.
 
 ---

@@ -106,11 +106,13 @@ end
 MarketplaceService.ProcessReceipt = processReceipt
 ```
 
-> **This handler is not yet idempotent.** `ProcessReceipt` runs again for every unresolved purchase
+> **This handler is not yet idempotent or durable.** `ProcessReceipt` runs again for every unresolved purchase
 > when the player joins, so a receipt you already granted can arrive again (a server that stopped
-> after granting, before Roblox recorded the result). Record each `PurchaseId` together with the
-> grant: see `worked-examples.md` §6 for the `UpdateAsync` pattern, tested in Studio 0.742. Roblox's
-> own sample checks only `if success then`, although its warning says a handler must return `true`.
+> after granting, before Roblox recorded the result). Store each `PurchaseId` and the granted item
+> together inside the player's durable record (saved before returning `PurchaseGranted`, with no
+> side effects inside any `UpdateAsync` transform function): see `worked-examples.md` §6 for the
+> pattern. Roblox's own sample checks only `if success then`, although its warning says a handler
+> must return `true`.
 
 > **Products sold outside the game depend on `ProcessReceipt`.** The *Developer products* page: after
 > a purchase in the **Store** tab of the game details page, "you must use `ProcessReceipt` to confirm

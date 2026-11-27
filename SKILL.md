@@ -260,12 +260,44 @@ These rules apply to ALL generated Roblox/Luau code. They are non-negotiable.
 ### 5. Error Handling
 <!-- skilltest: prelude datastore; expect call-succeeded -->
 ```lua
-local success, result = pcall(function()
-    return DataStoreService:GetDataStore("PlayerData"):GetAsync(key)
-end)
-if not success then
-    warn("[DataService] Failed to load data:", result)
-    -- Handle gracefully: use defaults, retry, etc.
+local MAX_ATTEMPTS = 3
+local canSave = false
+local playerData: any = nil
+local success = false
+local result: any = nil
+
+local function loadPlayerData(): boolean
+    for attempt = 1, MAX_ATTEMPTS do
+        success, result = pcall(function()
+            return DataStoreService:GetDataStore("PlayerData"):GetAsync(key)
+        end)
+        if success then
+            break
+        end
+        warn("[DataService] Failed to load data:", result)
+        if attempt < MAX_ATTEMPTS then
+            task.wait(attempt)
+        end
+    end
+
+    if not success then
+        -- Never fall back to defaults for persistent play: a later save would overwrite real data.
+        -- Deny persistent play (kick the player) and exit while canSave remains false.
+        return false
+    end
+
+    if result == nil then
+        -- Confirmed absent key (successful read returned nil): initialize defaults here.
+        playerData = {}
+    else
+        playerData = result
+    end
+    canSave = true
+    return true
+end
+
+if not loadPlayerData() then
+    return
 end
 ```
 

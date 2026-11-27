@@ -2471,32 +2471,32 @@
   {
    "id": "monetization-003",
    "file": "references/monetization.md",
-   "quote": "**This handler is not yet idempotent.** `ProcessReceipt` runs again for every unresolved purchase",
+   "quote": "**This handler is not yet idempotent or durable.** `ProcessReceipt` runs again for every unresolved purchase",
    "status": "docs",
    "kind": "negative",
    "source": "Roblox/creator-docs MarketplaceService.yaml",
    "evidence": "ProcessReceipt is called for unresolved purchases when the user joins.",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "monetization-004",
    "file": "references/monetization.md",
-   "quote": "grant: see `worked-examples.md` §6 for the `UpdateAsync` pattern, tested in Studio 0.742. Roblox's",
-   "status": "studio",
-   "kind": "number",
-   "source": "expect/receipt-idempotent",
-   "evidence": "5/5 PASS 2026-10-11.",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "quote": "pattern. Roblox's own sample checks only `if success then`, although its warning says a handler",
+   "status": "docs",
+   "kind": "negative",
+   "source": "Roblox/creator-docs developer-products.md; player-data-purchasing.md",
+   "evidence": "Official sample checks pcall success; warning says handler must return true; store PurchaseId in durable player record.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "monetization-005",
    "file": "references/monetization.md",
-   "quote": "own sample checks only `if success then`, although its warning says a handler must return `true`.",
+   "quote": "together inside the player's durable record (saved before returning `PurchaseGranted`, with no",
    "status": "docs",
    "kind": "negative",
-   "source": "creator-docs developer-products.md",
-   "evidence": "pcall(handler) then if success then; warning must return true.",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; GlobalDataStore.md",
+   "evidence": "Purchase must be persisted before PurchaseGranted; UpdateAsync transform may be called multiple times.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "monetization-006",
@@ -4321,32 +4321,32 @@
   {
    "id": "worked-examples-028",
    "file": "references/worked-examples.md",
-   "quote": "**A handler returns `true` only once the item is really granted.** Roblox's own sample checks",
+   "quote": "**A handler mutates only the serializable player record, with no side effects.** `GlobalDataStore:UpdateAsync()` can invoke its transform function more than once",
    "status": "docs",
    "kind": "negative",
-   "source": "Roblox/creator-docs production/monetization/developer-products.md; MarketplaceService.yaml",
-   "evidence": "Official sample: pcall(handler, ...) then \"if success then\"; warning: handlers \"must return true\".",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "source": "Roblox/creator-docs reference/engine/classes/GlobalDataStore.md",
+   "evidence": "GlobalDataStore:UpdateAsync() will call the function again, discarding the result of the previous call, if another server changed the key.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "worked-examples-029",
    "file": "references/worked-examples.md",
-   "quote": "only that the handler did not *error* (`if success then`), although the warning under it says",
+   "quote": "**Make it idempotent and durable through the single session writer.** `ProcessReceipt` runs again for every *unresolved* purchase",
    "status": "docs",
    "kind": "negative",
-   "source": "Roblox/creator-docs production/monetization/developer-products.md; MarketplaceService.yaml",
-   "evidence": "As above.",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; MarketplaceService.yaml",
+   "evidence": "Store PurchaseId and grant in the player's durable record saved before returning PurchaseGranted.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "worked-examples-030",
    "file": "references/worked-examples.md",
-   "quote": "purchase each time the player joins, and a purchase only counts as resolved once",
+   "quote": "**Return `NotProcessedYet` whenever you are unsure.** The purchase stays unresolved and is",
    "status": "docs",
    "kind": "negative",
-   "source": "MarketplaceService.yaml ProcessReceipt",
-   "evidence": "Called for unresolved purchases when \"A user joins the server\".",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "source": "Roblox/creator-docs MarketplaceService.yaml ProcessReceipt",
+   "evidence": "NotProcessedYet keeps the purchase unresolved for retry on next join.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "worked-examples-031",
@@ -4361,18 +4361,38 @@
   {
    "id": "worked-examples-032",
    "file": "references/worked-examples.md",
-   "quote": "(Run exactly this way in Studio 0.742, 2026-10-11, against a real DataStore: all five matched.) Use",
-   "status": "studio",
-   "kind": "number",
-   "source": "Studio harness expectations 2026-10-11; metadata.json 2.16.0 verified_by (worked-example verifications run in Studio 0.742)",
-   "evidence": "expect/receipt-idempotent.luau 5/5 PASS in the harness (2026-10-11).",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "quote": "(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers each row.) Use",
+   "status": "unverified",
+   "kind": "negative",
+   "source": "",
+   "evidence": "",
+   "checked": ""
   },
   {
    "id": "worked-examples-033",
    "file": "references/worked-examples.md",
    "quote": "`PurchaseId`s with a `test-` prefix so they cannot collide with real purchases.",
    "status": "advice",
+   "kind": "negative",
+   "source": "",
+   "evidence": "",
+   "checked": ""
+  },
+  {
+   "id": "worked-examples-061",
+   "file": "references/worked-examples.md",
+   "quote": "`UpdateAsync` runs the transform, then raises an error before the write | `NotProcessedYet`. The store and the session hold 0 `Potion`",
+   "status": "unverified",
+   "kind": "negative",
+   "source": "",
+   "evidence": "",
+   "checked": ""
+  },
+  {
+   "id": "worked-examples-062",
+   "file": "references/worked-examples.md",
+   "quote": "`UpdateAsync` writes, then raises an error | `NotProcessedYet`. The session holds 1 `Potion`",
+   "status": "unverified",
    "kind": "negative",
    "source": "",
    "evidence": "",
@@ -12697,6 +12717,16 @@
    "source": "worked-examples verification step",
    "evidence": "",
    "checked": "2026-11-23"
+  },
+  {
+   "id": "datastore-persistence-037",
+   "file": "references/datastore-persistence.md",
+   "quote": "**Bind to close** — for raw DataStore saves, wait for all spawned save tasks to finish inside `game:BindToClose` (Roblox waits up to 30 seconds",
+   "status": "docs",
+   "kind": "number",
+   "source": "Roblox/creator-docs reference/engine/classes/DataModel.md",
+   "evidence": "The experience server waits 30 seconds for all bound functions to stop running before it shuts down.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   }
  ]
 }

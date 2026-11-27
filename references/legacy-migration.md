@@ -147,7 +147,13 @@ local function loadPlayer(player: Player)
         local success, legacyData = pcall(function()
             return legacyStore:GetAsync(`Player_{player.UserId}`)
         end)
-        if success and legacyData then
+        if not success then
+            warn(`[LegacyMigration] Failed to read legacy data for {player.UserId}: {legacyData}`)
+            profile:EndSession()
+            player:Kick("Unable to migrate your saved data. Please rejoin.")
+            return
+        end
+        if legacyData then
             profile.Data.Coins = legacyData.Coins or 0
             profile.Data.Inventory = legacyData.Inventory or {}
         end

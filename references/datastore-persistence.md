@@ -439,19 +439,57 @@ Players.PlayerRemoving:Connect(onPlayerRemoving)
 4. **Flatten when possible** — deeply nested tables are harder to migrate
 5. **Never store Instances** — only serializable Luau types (string, number, boolean, table, buffer)
 6. **Use `UpdateAsync` for player data** — atomic, prevents overwrites
-7. **Bind to close** — always save on `game:BindToClose` with a timeout
+7. **Bind to close** — for raw DataStore saves, wait for all spawned save tasks to finish inside `game:BindToClose` (Roblox waits up to 30 seconds for bound functions to complete; ProfileStore handles its own shutdown saves)
 
 <!-- skilltest: prelude save-on-leave -->
 ```luau
 --!strict
-game:BindToClose(function()
-    -- Give DataStore calls time to complete (max 30s in production)
-    for _, player in Players:GetPlayers() do
-        task.spawn(function()
-            onPlayerRemoving(player)
-        end)
+-- Track every final save (from PlayerRemoving or shutdown) in one registry so
+-- BindToClose waits for saves already in flight and starts each final save once.
+local SHUTDOWN_SAVE_BUDGET_SECONDS = 28
+local finalSaveState: { [Player]: "saving" | "saved" } = {}
+local inFlightSaves = 0
+
+local function saveFinalOnce(player: Player)
+    if finalSaveState[player] ~= nil then
+        return
     end
-    task.wait(5) -- wait for saves to flush
+    finalSaveState[player] = "saving"
+    inFlightSaves += 1
+
+    local ok, err = pcall(onPlayerRemoving, player)
+    if not ok then
+        warn(`[DataService] Final save failed for {player.UserId}: {err}`)
+    end
+
+    finalSaveState[player] = if player:IsDescendantOf(Players) then "saved" else nil
+    inFlightSaves -= 1
+end
+
+Players.PlayerRemoving:Connect(function(player: Player)
+    saveFinalOnce(player)
+    if finalSaveState[player] == "saved" then
+        finalSaveState[player] = nil
+    end
+end)
+
+game:BindToClose(function()
+    -- Wait for saves already started by PlayerRemoving and start one for remaining players.
+    -- Roblox waits up to 30s for bound functions to complete.
+    local deadline = os.clock() + SHUTDOWN_SAVE_BUDGET_SECONDS
+    for _, player in Players:GetPlayers() do
+        if finalSaveState[player] == nil then
+            task.spawn(saveFinalOnce, player)
+        end
+    end
+
+    while inFlightSaves > 0 and os.clock() < deadline do
+        task.wait()
+    end
+
+    if inFlightSaves > 0 then
+        warn(`[DataService] Shutdown deadline reached with {inFlightSaves} final saves still in flight`)
+    end
 end)
 ```
 
