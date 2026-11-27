@@ -406,7 +406,9 @@ local function addOfflineCurrency(userId: number, amount: number): boolean
                 return nil -- reject corrupt non-table data
             end
             local data: { [string]: any } = if oldData ~= nil then table.clone(oldData) else { currency = 0 }
-            -- Verify the same session lock active servers set inside UpdateAsync.
+            -- Placeholder field for your own custom lock (add TTL/expiration for crashed servers).
+            -- ProfileStore keeps its lock in its own MetaData wrapper; ProfileStore users must send
+            -- offline changes through ProfileStore:MessageAsync instead of mutating this key directly.
             if data.sessionLock ~= nil then
                 return nil -- active session owns this key: route change through that server instead
             end

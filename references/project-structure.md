@@ -224,7 +224,10 @@ local sessionData: { [Player]: PlayerData } = {}
 local finalSaveState: { [Player]: "saving" | "saved" } = {}
 local savingByUserId: { [number]: boolean } = {}
 local inFlightSaves = 0
-local MAX_SAVE_RETRIES = 3
+local SAVE_ATTEMPTS = 3
+local BASE_RETRY_DELAY = 1 -- seconds
+local MAX_RETRY_DELAY = 8 -- seconds
+local SHUTDOWN_SAVE_BUDGET_SECONDS = 28
 
 export type PlayerData = {
 	Coins: number,
@@ -253,7 +256,7 @@ function PlayerDataService.Init()
 	-- Wait for saves already started by PlayerRemoving and start one for remaining players.
 	-- Roblox waits up to 30 seconds for BindToClose callbacks.
 	game:BindToClose(function()
-		local deadline = os.clock() + 28
+		local deadline = os.clock() + SHUTDOWN_SAVE_BUDGET_SECONDS
 		for _, player in Players:GetPlayers() do
 			if finalSaveState[player] == nil and sessionData[player] ~= nil then
 				task.spawn(PlayerDataService.saveData, player)
@@ -261,6 +264,9 @@ function PlayerDataService.Init()
 		end
 		while inFlightSaves > 0 and os.clock() < deadline do
 			task.wait()
+		end
+		if inFlightSaves > 0 then
+			warn(`[PlayerDataService] Shutdown deadline reached with {inFlightSaves} final saves still in flight`)
 		end
 	end)
 end
@@ -308,7 +314,7 @@ function PlayerDataService.saveData(player: Player): boolean
 	inFlightSaves += 1
 
 	local saved = false
-	for attempt = 1, MAX_SAVE_RETRIES do
+	for attempt = 1, SAVE_ATTEMPTS do
 		local ok, err = pcall(function()
 			playerDataStore:UpdateAsync(`Player_{userId}`, function(_oldData: any, keyInfo: DataStoreKeyInfo?)
 				local userIds = if keyInfo then keyInfo:GetUserIds() else {}
@@ -324,9 +330,11 @@ function PlayerDataService.saveData(player: Player): boolean
 			saved = true
 			break
 		end
-		warn(`[PlayerDataService] save attempt {attempt} failed for {userId}: {err}`)
-		if attempt < MAX_SAVE_RETRIES then
-			task.wait(math.min(2 ^ (attempt - 1), 8))
+		warn(`[PlayerDataService] save attempt {attempt} of {SAVE_ATTEMPTS} failed for {userId}: {err}`)
+		if attempt < SAVE_ATTEMPTS then
+			local backoff = math.min(BASE_RETRY_DELAY * (2 ^ (attempt - 1)), MAX_RETRY_DELAY)
+			local jitter = math.random() * 0.5
+			task.wait(backoff + jitter)
 		end
 	end
 
@@ -347,7 +355,7 @@ return PlayerDataService
 > **One writer for `PlayerData_v1`.** This service is the one writer of the player record. A game
 > that sells developer products must keep each receipt grant and `ProcessedReceipts` in this same
 > record, and write the record from one session owner. Do not add a second writer for the same
-> key: its `SetAsync` on leave saves an older in-memory copy over the grant. Example 6 in
+> key: its leave save writes an older in-memory copy over the grant. Example 6 in
 > `worked-examples.md` (`ReceiptHandler`) is that session owner, and it replaces this service.
 
 ### Client Controller Example
