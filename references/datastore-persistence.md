@@ -439,19 +439,32 @@ Players.PlayerRemoving:Connect(onPlayerRemoving)
 4. **Flatten when possible** — deeply nested tables are harder to migrate
 5. **Never store Instances** — only serializable Luau types (string, number, boolean, table, buffer)
 6. **Use `UpdateAsync` for player data** — atomic, prevents overwrites
-7. **Bind to close** — always save on `game:BindToClose` with a timeout
+7. **Bind to close** — for raw DataStore saves, wait for all spawned save tasks to finish inside `game:BindToClose` (Roblox waits up to 30 seconds for bound functions to complete; ProfileStore handles its own shutdown saves)
 
 <!-- skilltest: prelude save-on-leave -->
 ```luau
 --!strict
 game:BindToClose(function()
-    -- Give DataStore calls time to complete (max 30s in production)
-    for _, player in Players:GetPlayers() do
+    -- Wait for every raw DataStore save to finish (Roblox waits up to 30s for bound functions).
+    local activePlayers = Players:GetPlayers()
+    local remaining = #activePlayers
+    if remaining == 0 then
+        return
+    end
+
+    for _, player in activePlayers do
         task.spawn(function()
-            onPlayerRemoving(player)
+            local ok, err = pcall(onPlayerRemoving, player)
+            if not ok then
+                warn(`[BindToClose] Save failed for {player.UserId}: {err}`)
+            end
+            remaining -= 1
         end)
     end
-    task.wait(5) -- wait for saves to flush
+
+    while remaining > 0 do
+        task.wait()
+    end
 end)
 ```
 
