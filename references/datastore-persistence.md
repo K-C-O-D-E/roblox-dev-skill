@@ -444,25 +444,45 @@ Players.PlayerRemoving:Connect(onPlayerRemoving)
 <!-- skilltest: prelude save-on-leave -->
 ```luau
 --!strict
-game:BindToClose(function()
-    -- Wait for every raw DataStore save to finish (Roblox waits up to 30s for bound functions).
-    local activePlayers = Players:GetPlayers()
-    local remaining = #activePlayers
-    if remaining == 0 then
+-- Track every final save (from PlayerRemoving or shutdown) in one registry so
+-- BindToClose waits for saves already in flight and starts each final save once.
+local finalSaveState: { [Player]: "saving" | "saved" } = {}
+local inFlightSaves = 0
+
+local function saveFinalOnce(player: Player)
+    if finalSaveState[player] ~= nil then
         return
     end
+    finalSaveState[player] = "saving"
+    inFlightSaves += 1
 
-    for _, player in activePlayers do
-        task.spawn(function()
-            local ok, err = pcall(onPlayerRemoving, player)
-            if not ok then
-                warn(`[BindToClose] Save failed for {player.UserId}: {err}`)
-            end
-            remaining -= 1
-        end)
+    local ok, err = pcall(onPlayerRemoving, player)
+    if not ok then
+        warn(`[DataService] Final save failed for {player.UserId}: {err}`)
     end
 
-    while remaining > 0 do
+    finalSaveState[player] = if player:IsDescendantOf(Players) then "saved" else nil
+    inFlightSaves -= 1
+end
+
+Players.PlayerRemoving:Connect(function(player: Player)
+    saveFinalOnce(player)
+    if finalSaveState[player] == "saved" then
+        finalSaveState[player] = nil
+    end
+end)
+
+game:BindToClose(function()
+    -- Wait for saves already started by PlayerRemoving and start one for remaining players.
+    -- Roblox waits up to 30s for bound functions to complete.
+    local deadline = os.clock() + 28
+    for _, player in Players:GetPlayers() do
+        if finalSaveState[player] == nil then
+            task.spawn(saveFinalOnce, player)
+        end
+    end
+
+    while inFlightSaves > 0 and os.clock() < deadline do
         task.wait()
     end
 end)

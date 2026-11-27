@@ -4331,7 +4331,7 @@
   {
    "id": "worked-examples-029",
    "file": "references/worked-examples.md",
-   "quote": "**Make it idempotent and durable in one record.** `ProcessReceipt` runs again for every *unresolved* purchase",
+   "quote": "**Make it idempotent and durable in one authoritative record.** `ProcessReceipt` runs again for every *unresolved* purchase",
    "status": "docs",
    "kind": "negative",
    "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; MarketplaceService.yaml",
@@ -4361,12 +4361,12 @@
   {
    "id": "worked-examples-032",
    "file": "references/worked-examples.md",
-   "quote": "(Run exactly this way in Studio 0.742, 2026-10-11, against a real DataStore: all five matched.) Use",
-   "status": "studio",
-   "kind": "number",
-   "source": "Studio harness expectations 2026-10-11; metadata.json 2.16.0 verified_by (worked-example verifications run in Studio 0.742)",
-   "evidence": "expect/receipt-idempotent.luau 5/5 PASS in the harness (2026-10-11).",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "quote": "(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers these cases.) Use",
+   "status": "unverified",
+   "kind": "negative",
+   "source": "",
+   "evidence": "",
+   "checked": ""
   },
   {
    "id": "worked-examples-033",

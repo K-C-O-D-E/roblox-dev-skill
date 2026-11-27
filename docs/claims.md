@@ -20,8 +20,8 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/security-hardening.md` | 27 | 37 | 3 | 0 | 7 | 0 | 13 |
 | `references/studio-plugins-and-limits.md` | 18 | 1 | 1 | 1 | 9 | 0 | 0 |
 | `references/ui-systems.md` | 17 | 13 | 3 | 1 | 3 | 0 | 5 |
-| `references/worked-examples.md` | 23 | 9 | 3 | 1 | 23 | 0 | 1 |
-| **total** | **536** | **281** | **96** | **95** | **122** | **0** | **138** |
+| `references/worked-examples.md` | 22 | 9 | 3 | 1 | 23 | 1 | 1 |
+| **total** | **535** | **281** | **96** | **95** | **122** | **1** | **138** |
 
 ## Verified claims
 
@@ -367,10 +367,9 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/worked-examples.md`: when `Security` is `None`. Treat `Security: None` + `PluginOrOpenCloud` as plugin-only. | studio | Every such member failed from a Script. (SkillTestClaimProbe 2026-10-11) |
 | `references/worked-examples.md`: `Tags` — `Deprecated`, `Yields`, `ReadOnly`, `NotScriptable`. | dump | Member tag names as in the dump. (API dump 0.742) |
 | `references/worked-examples.md`: **A handler mutates only the serializable player record, with no side effects.** `GlobalDataStore:UpdateAsync()` can invoke its transform function more than onc | docs | GlobalDataStore:UpdateAsync() will call the function again, discarding the result of the previous call, if another server changed the key. (Roblox/creator-docs reference/engine/classes/GlobalDataStore.md) |
-| `references/worked-examples.md`: **Make it idempotent and durable in one record.** `ProcessReceipt` runs again for every *unresolved* purchase | docs | Store PurchaseId and grant in the player's durable record saved before returning PurchaseGranted. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; MarketplaceService.yaml) |
+| `references/worked-examples.md`: **Make it idempotent and durable in one authoritative record.** `ProcessReceipt` runs again for every *unresolved* purchase | docs | Store PurchaseId and grant in the player's durable record saved before returning PurchaseGranted. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; MarketplaceService.yaml) |
 | `references/worked-examples.md`: **Return `NotProcessedYet` whenever you are unsure.** The purchase stays unresolved and is | docs | NotProcessedYet keeps the purchase unresolved for retry on next join. (Roblox/creator-docs MarketplaceService.yaml ProcessReceipt) |
 | `references/worked-examples.md`: retried when the player next joins; it is never refunded or dropped by that answer. | docs | "Unresolved developer product purchases are not removed or refunded". (MarketplaceService.yaml ProcessReceipt) |
-| `references/worked-examples.md`: (Run exactly this way in Studio 0.742, 2026-10-11, against a real DataStore: all five matched.) Use | studio | expect/receipt-idempotent.luau 5/5 PASS in the harness (2026-10-11). (Studio harness expectations 2026-10-11; metadata.json 2.16.0 verified_by (worked-example verifications run in Studio 0.742)) |
 | `references/worked-examples.md`: newer server already upgraded. It must not "fix" it down or save over it: reject the load. | studio | expect/schema-migrates: a v4 save errors. (Studio harness expectations 2026-10-11) |
 | `references/worked-examples.md`: `Coins` key; a v3 save comes back unchanged; a v4 save errors. Then round-trip one save through a | studio | expect/schema-migrates 11/11 PASS; load-new-player 2/2. (Studio harness expectations 2026-10-11) |
 | `references/worked-examples.md`: way in Studio 0.742, 2026-10-11: all four matched.) | studio | As above. (Studio harness expectations 2026-10-11; metadata.json 2.16.0 verified_by (worked-example verifications run in Studio 0.742)) |
