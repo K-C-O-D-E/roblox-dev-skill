@@ -4,7 +4,11 @@ local skilltestHttp = game:GetService("HttpService")
 local skilltestDataStoreService = game:GetService("DataStoreService")
 local skilltestPlayer = skilltestPlayers:GetPlayers()[1] or skilltestPlayers.PlayerAdded:Wait()
 
-local testStore = skilltestDataStoreService:GetDataStore("SkillTest_Receipt_" .. skilltestHttp:GenerateGUID(false))
+-- Roblox caps DataStore names at 50 characters ("Receipt_" + 16 chars = 24 chars).
+local MAX_DATASTORE_NAME_LENGTH = 50
+local testStoreName = "Receipt_" .. string.sub(skilltestHttp:GenerateGUID(false), 1, 16)
+assert(#testStoreName <= MAX_DATASTORE_NAME_LENGTH, "test DataStore name exceeds 50-char limit")
+local testStore = skilltestDataStoreService:GetDataStore(testStoreName)
 ReceiptHandler.setDataStore(testStore)
 
 -- A test double around testStore. Each entry of `failures` sets how one UpdateAsync call fails:
