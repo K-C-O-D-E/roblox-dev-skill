@@ -4331,7 +4331,7 @@
   {
    "id": "worked-examples-029",
    "file": "references/worked-examples.md",
-   "quote": "**Make it idempotent and durable in one authoritative record.** `ProcessReceipt` runs again for every *unresolved* purchase",
+   "quote": "**Make it idempotent and durable through the single session writer.** `ProcessReceipt` runs again for every *unresolved* purchase",
    "status": "docs",
    "kind": "negative",
    "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md; MarketplaceService.yaml",
@@ -4361,7 +4361,7 @@
   {
    "id": "worked-examples-032",
    "file": "references/worked-examples.md",
-   "quote": "(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers these cases.) Use",
+   "quote": "(Not yet re-run in Studio after the durable-record revision; static checks pass and `tools/skill-test/expect/receipt-idempotent.luau` covers all seven rows.) Use",
    "status": "unverified",
    "kind": "negative",
    "source": "",
