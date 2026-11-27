@@ -8,7 +8,7 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 |---|---|---|---|---|---|---|---|
 | `SKILL.md` | 26 | 5 | 7 | 6 | 18 | 0 | 16 |
 | `references/agent-safety.md` | 12 | 10 | 0 | 0 | 23 | 0 | 4 |
-| `references/datastore-persistence.md` | 6 | 17 | 0 | 5 | 9 | 0 | 6 |
+| `references/datastore-persistence.md` | 6 | 18 | 0 | 6 | 9 | 0 | 6 |
 | `references/file-formats-and-assets.md` | 11 | 11 | 1 | 1 | 1 | 0 | 5 |
 | `references/legacy-migration.md` | 152 | 36 | 62 | 11 | 3 | 0 | 25 |
 | `references/luau-fundamentals.md` | 28 | 13 | 1 | 56 | 3 | 0 | 12 |
@@ -17,11 +17,11 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/networking.md` | 25 | 33 | 1 | 0 | 4 | 0 | 10 |
 | `references/performance-optimization.md` | 64 | 26 | 4 | 7 | 1 | 0 | 11 |
 | `references/project-structure.md` | 15 | 14 | 6 | 2 | 3 | 0 | 4 |
-| `references/security-hardening.md` | 27 | 37 | 3 | 0 | 8 | 0 | 13 |
+| `references/security-hardening.md` | 27 | 38 | 3 | 0 | 9 | 0 | 13 |
 | `references/studio-plugins-and-limits.md` | 18 | 1 | 1 | 1 | 9 | 0 | 0 |
 | `references/ui-systems.md` | 17 | 13 | 3 | 1 | 3 | 0 | 5 |
 | `references/worked-examples.md` | 22 | 9 | 3 | 1 | 23 | 3 | 1 |
-| **total** | **535** | **284** | **96** | **96** | **123** | **3** | **138** |
+| **total** | **535** | **286** | **96** | **97** | **124** | **3** | **138** |
 
 ## Verified claims
 
@@ -1176,4 +1176,7 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/datastore-persistence.md`: **Bind to close** — for raw DataStore saves, wait for all spawned save tasks to finish inside `game:BindToClose` (Roblox waits up to 30 seconds | docs | The experience server waits 30 seconds for all bound functions to stop running before it shuts down. (Roblox/creator-docs reference/engine/classes/DataModel.md) |
 | `references/datastore-persistence.md`: **Multi-server safety** \| Risk of data inconsistency \| Atomic for one key update only (still needs a session lock for active player sessions) | docs | UpdateAsync is atomic for a single key update; session locking is still required for active player sessions. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md) |
 | `references/datastore-persistence.md`: Data stores are subject to both **experience-level and server-level limits** (official [Error Codes & Limits] | docs | Standard and Ordered DataStore experience limits: base 300/min + concurrentUsers x (40 read, 20 write, 2 list, 40 remove). (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
-| `references/datastore-persistence.md`: 2. Read the legacy store via DataStore2's `Get(nil)` wrapped in `pcall`, and verify `not oldStore:IsBackup()` | source | DataStore2:Get retries until success by default; with SetBackup enabled, IsBackup() distinguishes a backup value from real data. (Kampfkarren/Roblox DataStore2 source) |
+| `references/datastore-persistence.md`: 2. Call `oldStore:SetBackup(3)` to bound DataStore2's internal retries (without `SetBackup`, DataStore2 retries failed reads indefinitely), then read via `oldSt | source | DataStore2:Get retries until success by default; with SetBackup enabled, IsBackup() distinguishes a backup value from real data. (Kampfkarren/Roblox DataStore2 source) |
+| `references/datastore-persistence.md`: Individual servers enforce configurable per-server caps alongside the experience-level limits above (official [Server Limits](https://create.roblox.com/docs/clo | docs | Default server budgets: Standard Read/Write/Remove 60 + numPlayers*40, List 5 + numPlayers*2; Ordered Read 60 + numPlayers*40, Write/Remove 30 + numPlayers*5, List 5 + numPlayers*2. (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md#server-limits) |
+| `references/datastore-persistence.md`: 3. Treat only `nil` (with `not oldStore:IsBackup()`) as a verified absent record. If `oldData ~= nil`, validate that it is a table with valid expected fields be | source | DataStore2 supports scalar values as well as tables; only nil with not IsBackup() proves absence. (Kampfkarren/Roblox DataStore2 API) |
+| `references/security-hardening.md`: > and `keyInfo:GetMetadata()` from `UpdateAsync` so associated user IDs and lock metadata are never | docs | Omitting userIds or metadata in the UpdateAsync transform return clears existing associated IDs and metadata. (Roblox/creator-docs reference/engine/classes/GlobalDataStore.md#UpdateAsync) |

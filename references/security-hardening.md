@@ -382,27 +382,52 @@ end)
 Use `GlobalDataStore:UpdateAsync()` for atomic read-modify-write operations. Never use
 `GetAsync` followed by `SetAsync` — this creates race conditions.
 
-> **Session-lock boundary:** `UpdateAsync` is atomic for one key update, not a session lock. If the
-> player is currently online on a server holding an active in-memory session (for example,
-> ProfileStore), send currency changes through that session-owning server instead of writing
-> out-of-band; otherwise that server's next save will overwrite the change. Use direct `UpdateAsync`
-> below only for offline keys or standalone atomic counters.
+> **Session-lock boundary:** `UpdateAsync` is atomic for one key update, not a session lock. Never
+> check "is the player offline?" before calling `UpdateAsync`, because the player can join before the
+> write commits. Either write to a separate inbox/counter key that active sessions never cache and
+> overwrite, or verify the same session lock **inside** the `UpdateAsync` callback and cancel
+> (`return nil`) when a server holds an active lock. Always return existing `keyInfo:GetUserIds()`
+> and `keyInfo:GetMetadata()` from `UpdateAsync` so associated user IDs and lock metadata are never
+> cleared.
 
 ```luau
 --!strict
 local DataStoreService = game:GetService("DataStoreService")
 local playerStore = DataStoreService:GetDataStore("PlayerData")
 
--- Offline-only or standalone atomic update (do not call out-of-band while a session holds the key).
+-- Coordinate offline writes with session acquisition INSIDE UpdateAsync.
+-- Returns true only when the write committed with no active session lock.
 local function addOfflineCurrency(userId: number, amount: number): boolean
-    local success, _ = pcall(function()
-        playerStore:UpdateAsync(`Player_{userId}`, function(oldData: any)
-            local data = if typeof(oldData) == "table" then oldData else { currency = 0 }
-            data.currency = (if typeof(data.currency) == "number" then data.currency else 0) + amount
-            return data
+    local applied = false
+    local success, err = pcall(function()
+        playerStore:UpdateAsync(`Player_{userId}`, function(oldData: any, keyInfo: DataStoreKeyInfo?)
+            applied = false
+            if oldData ~= nil and typeof(oldData) ~= "table" then
+                return nil -- reject corrupt non-table data
+            end
+            local data: { [string]: any } = if oldData ~= nil then table.clone(oldData) else { currency = 0 }
+            -- Verify the same session lock active servers set inside UpdateAsync.
+            if data.sessionLock ~= nil then
+                return nil -- active session owns this key: route change through that server instead
+            end
+            if data.currency ~= nil and typeof(data.currency) ~= "number" then
+                return nil
+            end
+            data.currency = (data.currency or 0) + amount
+            local userIds = if keyInfo then keyInfo:GetUserIds() else {}
+            if #userIds == 0 and userId > 0 then
+                userIds = { userId }
+            end
+            local metadata = if keyInfo then keyInfo:GetMetadata() else {}
+            applied = true
+            return data, userIds, metadata
         end)
     end)
-    return success
+    if not success then
+        warn(`[DataService] Offline currency update failed for {userId}: {err}`)
+        return false
+    end
+    return applied
 end
 ```
 

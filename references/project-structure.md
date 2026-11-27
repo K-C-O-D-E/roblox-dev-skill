@@ -219,7 +219,11 @@ local DataStoreService = game:GetService("DataStoreService")
 local PlayerDataService = {}
 
 local playerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
-local sessionData: { [number]: PlayerData } = {}
+-- Key session state by Player instance (not UserId) so an old departure save never clears a rejoined session.
+local sessionData: { [Player]: PlayerData } = {}
+local finalSaveState: { [Player]: "saving" | "saved" } = {}
+local savingByUserId: { [number]: boolean } = {}
+local inFlightSaves = 0
 local MAX_SAVE_RETRIES = 3
 
 export type PlayerData = {
@@ -241,36 +245,44 @@ function PlayerDataService.Init()
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		PlayerDataService.saveData(player)
+		if finalSaveState[player] == "saved" then
+			finalSaveState[player] = nil
+		end
 	end)
 
-	-- On shutdown PlayerRemoving may not finish; wait for every spawned save task to settle.
+	-- Wait for saves already started by PlayerRemoving and start one for remaining players.
+	-- Roblox waits up to 30 seconds for BindToClose callbacks.
 	game:BindToClose(function()
-		local activePlayers = Players:GetPlayers()
-		local remaining = #activePlayers
-		for _, player in activePlayers do
-			task.spawn(function()
-				local ok, err = pcall(PlayerDataService.saveData, player)
-				if not ok then
-					warn(`[PlayerDataService] BindToClose save failed for {player.UserId}: {err}`)
-				end
-				remaining -= 1
-			end)
+		local deadline = os.clock() + 28
+		for _, player in Players:GetPlayers() do
+			if finalSaveState[player] == nil and sessionData[player] ~= nil then
+				task.spawn(PlayerDataService.saveData, player)
+			end
 		end
-		while remaining > 0 do
+		while inFlightSaves > 0 and os.clock() < deadline do
 			task.wait()
 		end
 	end)
 end
 
 function PlayerDataService.loadData(player: Player)
+	local userId = player.UserId
+	-- Serialize with any in-flight departure save for the same UserId before reading.
+	while savingByUserId[userId] do
+		if not player:IsDescendantOf(Players) then
+			return
+		end
+		task.wait()
+	end
+
 	local success, data = pcall(function()
-		return playerDataStore:GetAsync(`Player_{player.UserId}`)
+		return playerDataStore:GetAsync(`Player_{userId}`)
 	end)
 
 	if not success then
 		-- Never fall back to defaults on a FAILED read: saveData would later overwrite the
 		-- player's real save with them. Leave no session, so nothing is saved.
-		warn(`[PlayerDataService] load failed for {player.UserId}: {data}`)
+		warn(`[PlayerDataService] load failed for {userId}: {data}`)
 		player:Kick("Your data could not be loaded. Please rejoin.")
 		return
 	end
@@ -278,38 +290,55 @@ function PlayerDataService.loadData(player: Player)
 		-- Player left while GetAsync yielded: do not leak an orphaned entry in sessionData.
 		return
 	end
-	sessionData[player.UserId] = if data then data :: PlayerData else defaultData()
+	sessionData[player] = if data then data :: PlayerData else defaultData()
 end
 
 function PlayerDataService.saveData(player: Player): boolean
-	local data = sessionData[player.UserId]
+	if finalSaveState[player] ~= nil then
+		return false -- final save already in progress or completed for this Player session
+	end
+	local data = sessionData[player]
 	if not data then
 		return false
 	end
 
+	local userId = player.UserId
+	finalSaveState[player] = "saving"
+	savingByUserId[userId] = true
+	inFlightSaves += 1
+
 	local saved = false
 	for attempt = 1, MAX_SAVE_RETRIES do
 		local ok, err = pcall(function()
-			playerDataStore:UpdateAsync(`Player_{player.UserId}`, function(_oldData: any): PlayerData
-				return data
+			playerDataStore:UpdateAsync(`Player_{userId}`, function(_oldData: any, keyInfo: DataStoreKeyInfo?)
+				local userIds = if keyInfo then keyInfo:GetUserIds() else {}
+				-- Preserve associated UserIds and metadata; associate positive player UserIds when absent.
+				if #userIds == 0 and userId > 0 then
+					userIds = { userId }
+				end
+				local metadata = if keyInfo then keyInfo:GetMetadata() else {}
+				return data, userIds, metadata
 			end)
 		end)
 		if ok then
 			saved = true
 			break
 		end
-		warn(`[PlayerDataService] save attempt {attempt} failed for {player.UserId}: {err}`)
+		warn(`[PlayerDataService] save attempt {attempt} failed for {userId}: {err}`)
 		if attempt < MAX_SAVE_RETRIES then
 			task.wait(math.min(2 ^ (attempt - 1), 8))
 		end
 	end
 
-	sessionData[player.UserId] = nil
+	sessionData[player] = nil
+	savingByUserId[userId] = nil
+	finalSaveState[player] = if player:IsDescendantOf(Players) then "saved" else nil
+	inFlightSaves -= 1
 	return saved
 end
 
 function PlayerDataService.getData(player: Player): PlayerData?
-	return sessionData[player.UserId]
+	return sessionData[player]
 end
 
 return PlayerDataService

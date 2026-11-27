@@ -129,15 +129,35 @@ local MAX_RETRIES = 3
 local BASE_RETRY_DELAY = 1
 local MAX_RETRY_DELAY = 8
 
+-- Documented non-retryable DataStore error codes (checked 2026-11-26):
+-- 101-107 (invalid key/value/range/size), 401-403 (shutdown or Studio API disabled),
+-- 509 (blocked private RCC), 511-513 (metadata/UserId format or size errors).
+-- Codes 404 and 502 are documented as transient ("Try again later") and must be retried.
+local PERMANENT_ERROR_CODES: { [number]: boolean } = {
+    [101] = true,
+    [102] = true,
+    [103] = true,
+    [104] = true,
+    [105] = true,
+    [106] = true,
+    [107] = true,
+    [401] = true,
+    [402] = true,
+    [403] = true,
+    [509] = true,
+    [511] = true,
+    [512] = true,
+    [513] = true,
+}
+
 local function isPermanentError(err: any): boolean
-    local message = tostring(err)
-    -- 101-106 and 401-404 indicate invalid key/data, studio access disabled, or permission errors.
-    return string.find(message, "10[1-6]") ~= nil
-        or string.find(message, "40[1-4]") ~= nil
-        or string.find(message, "API Services rejected") ~= nil
+    local codeText = string.match(tostring(err), "^%s*(%d+):")
+    local code = if codeText then tonumber(codeText) else nil
+    return code ~= nil and PERMANENT_ERROR_CODES[code] == true
 end
 
 local function safeGetAsync(store: DataStore, key: string): (boolean, any)
+    local lastError: any = nil
     for attempt = 1, MAX_RETRIES do
         local success, result = pcall(function()
             return store:GetAsync(key)
@@ -145,6 +165,7 @@ local function safeGetAsync(store: DataStore, key: string): (boolean, any)
         if success then
             return true, result
         end
+        lastError = result
         warn(`[DataStore] Attempt {attempt} failed: {result}`)
         if isPermanentError(result) then
             return false, result
@@ -155,7 +176,7 @@ local function safeGetAsync(store: DataStore, key: string): (boolean, any)
             task.wait(backoff + jitter)
         end
     end
-    return false, nil
+    return false, lastError
 end
 ```
 
@@ -187,9 +208,27 @@ Data stores are subject to both **experience-level and server-level limits** (of
 
 > `UpdateAsync` counts against **both** read and write budgets.
 
-### Server-Level Limits (Configurable)
+### Server-Level Limits (Configurable, Checked 2026-11-26)
 
-Individual servers enforce configurable per-server caps alongside the experience-level limits above. Use `DataStoreService:SetRateLimitForRequestType()` and `DataStoreService:GetRequestBudgetForRequestType()` to control each server's share of the experience budget.
+Individual servers enforce configurable per-server caps alongside the experience-level limits above (official [Server Limits](https://create.roblox.com/docs/cloud-services/data-stores/error-codes-and-limits#server-limits), checked 2026-11-26). Use `DataStoreService:SetRateLimitForRequestType()` and `DataStoreService:GetRequestBudgetForRequestType()` to configure or inspect each server's budget. The default per-server budgets below apply if `SetRateLimitForRequestType()` is not called:
+
+#### Default Server Limits — Standard DataStores
+
+| Request Type | `DataStoreRequestType` | Requests per Minute |
+|---|---|---|
+| **Read** | `StandardRead` | `60 + numPlayers × 40` |
+| **Write** | `StandardWrite` | `60 + numPlayers × 40` |
+| **List** | `StandardList` | `5 + numPlayers × 2` |
+| **Remove** | `StandardRemove` | `60 + numPlayers × 40` |
+
+#### Default Server Limits — Ordered DataStores
+
+| Request Type | `DataStoreRequestType` | Requests per Minute |
+|---|---|---|
+| **Read** | `OrderedRead` | `60 + numPlayers × 40` |
+| **Write** | `OrderedWrite` | `30 + numPlayers × 5` |
+| **List** | `OrderedList` | `5 + numPlayers × 2` |
+| **Remove** | `OrderedRemove` | `30 + numPlayers × 5` |
 
 ### Per-Key Throughput Limits
 
@@ -540,15 +579,21 @@ Roblox status):
 ### Migration: DataStore2 → ProfileStore
 
 1. Start the ProfileStore session, but block gameplay (do not expose the profile to game systems) until migration completes
-2. Read the legacy store via DataStore2's `Get(nil)` wrapped in `pcall`, and verify `not oldStore:IsBackup()` (if `SetBackup` is configured, a backup value is not an authoritative read)
-3. Copy any existing fields into `profile.Data`, and set `profile.Data.migrated = true` on both a migrated record and a verified absent record (`oldData == nil` with `not oldStore:IsBackup()`) so later joins do not query DataStore2 again
-4. If the read errors or returns a backup, end the session and kick the player without setting `migrated = true`
+2. Call `oldStore:SetBackup(3)` to bound DataStore2's internal retries (without `SetBackup`, DataStore2 retries failed reads indefinitely), then read via `oldStore:Get(nil)` inside `pcall` and verify `not oldStore:IsBackup()`
+3. Treat only `nil` (with `not oldStore:IsBackup()`) as a verified absent record. If `oldData ~= nil`, validate that it is a table with valid expected fields before modifying `profile.Data`; reject unrecognized scalars or malformed fields so legacy data is never skipped permanently
+4. Set `profile.Data.migrated = true` only after copying validated data or confirming absence (`oldData == nil` with `not oldStore:IsBackup()`). If the read errors, returns a backup, or returns an unrecognized value, end the session and kick the player without setting `migrated = true`
 
 <!-- skilltest: requires DataStore2; expect datastore2-migrates -->
 ```luau
 --!strict
 -- Run this BEFORE exposing `profile` to game systems so the player cannot play with unmigrated data.
 -- Returns true only when migration succeeded or the legacy record was verified absent.
+local LEGACY_READ_RETRIES = 3
+
+local function isFiniteNumber(value: any): boolean
+    return typeof(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
 local function migrateFromDataStore2(player: Player, profile: any): boolean
     if profile.Data.migrated then
         return true
@@ -556,6 +601,9 @@ local function migrateFromDataStore2(player: Player, profile: any): boolean
 
     local DataStore2 = require(game:GetService("ServerStorage"):WaitForChild("DataStore2") :: ModuleScript) -- legacy module
     local oldStore = DataStore2("PlayerSave", player)
+    -- Bound DataStore2 retries so failed reads do not stall join while ProfileStore holds a session.
+    oldStore:SetBackup(LEGACY_READ_RETRIES)
+
     local ok, oldData = pcall(function()
         return oldStore:Get(nil)
     end)
@@ -563,16 +611,36 @@ local function migrateFromDataStore2(player: Player, profile: any): boolean
         warn(`[DataStore2Migration] Read failed for {player.UserId}: {oldData}`)
         return false
     end
-    if typeof(oldStore.IsBackup) == "function" and oldStore:IsBackup() then
+    if oldStore:IsBackup() then
         warn(`[DataStore2Migration] Backup returned for {player.UserId}; refusing to migrate`)
         return false
     end
 
-    if typeof(oldData) == "table" then
-        profile.Data.coins = oldData.coins or profile.Data.coins
-        profile.Data.inventory = oldData.inventory or profile.Data.inventory
+    if oldData == nil then
+        -- Verified absent legacy key (not a backup): avoid repeat DataStore2 reads on future joins.
+        profile.Data.migrated = true
+        return true
     end
-    -- Mark migrated for both copied data and a verified absent legacy key (avoids repeat reads).
+
+    if typeof(oldData) ~= "table" then
+        warn(`[DataStore2Migration] Unrecognized legacy value type ({typeof(oldData)}) for {player.UserId}`)
+        return false
+    end
+    if oldData.coins ~= nil and not isFiniteNumber(oldData.coins) then
+        warn(`[DataStore2Migration] Invalid legacy coins field for {player.UserId}`)
+        return false
+    end
+    if oldData.inventory ~= nil and typeof(oldData.inventory) ~= "table" then
+        warn(`[DataStore2Migration] Invalid legacy inventory field for {player.UserId}`)
+        return false
+    end
+
+    if oldData.coins ~= nil then
+        profile.Data.coins = oldData.coins
+    end
+    if oldData.inventory ~= nil then
+        profile.Data.inventory = table.clone(oldData.inventory)
+    end
     profile.Data.migrated = true
     return true
 end

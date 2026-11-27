@@ -1,4 +1,4 @@
--- expect: old DataStore2 data merges once, verified absence marks migrated, and backups refuse migration.
+-- expect: old DataStore2 data merges once, verified absence marks migrated, bounded repeated failures return backup and refuse migration, and unrecognized or malformed legacy values are rejected.
 local profile = { Data = { coins = 0, inventory = {}, migrated = false } }
 local fake = { UserId = -910004 } :: any
 __skilltest.eq("existing record returns true", migrateFromDataStore2(fake, profile), true)
@@ -16,5 +16,17 @@ __skilltest.eq("verified absent old record marks migrated", absentProfile.Data.m
 
 local backupProfile = { Data = { coins = 0, inventory = {}, migrated = false } }
 local backupPlayer = { UserId = -910006 } :: any
-__skilltest.eq("backup value returns false", migrateFromDataStore2(backupPlayer, backupProfile), false)
+__skilltest.eq("bounded repeated read failure (backup) returns false", migrateFromDataStore2(backupPlayer, backupProfile), false)
 __skilltest.eq("backup value does not mark migrated", backupProfile.Data.migrated, false)
+
+local scalarProfile = { Data = { coins = 10, inventory = {}, migrated = false } }
+local scalarPlayer = { UserId = -910007 } :: any
+__skilltest.eq("unrecognized scalar legacy value returns false", migrateFromDataStore2(scalarPlayer, scalarProfile), false)
+__skilltest.eq("unrecognized scalar does not mark migrated", scalarProfile.Data.migrated, false)
+__skilltest.eq("unrecognized scalar leaves coins intact", scalarProfile.Data.coins, 10)
+
+local corruptProfile = { Data = { coins = 10, inventory = {}, migrated = false } }
+local corruptPlayer = { UserId = -910008 } :: any
+__skilltest.eq("malformed legacy field returns false", migrateFromDataStore2(corruptPlayer, corruptProfile), false)
+__skilltest.eq("malformed legacy field does not mark migrated", corruptProfile.Data.migrated, false)
+__skilltest.eq("malformed legacy field leaves coins intact", corruptProfile.Data.coins, 10)
