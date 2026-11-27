@@ -349,7 +349,8 @@ local Players = game:GetService("Players")
 local playerStore: DataStore = DataStoreService:GetDataStore("PlayerData_v1")
 local MAX_STORED_RECEIPTS = 500
 local SAVE_ATTEMPTS = 3
-local SAVE_RETRY_DELAY = 1 -- seconds before the second attempt. It doubles after each failed attempt.
+local BASE_RETRY_DELAY = 1 -- seconds
+local MAX_RETRY_DELAY = 8 -- seconds
 
 export type PlayerRecord = {
 	Coins: number,
@@ -368,6 +369,8 @@ ReceiptHandler.handlers = {} :: { [number]: GrantHandler }
 
 local sessions: { [Player]: PlayerRecord } = {}
 local writingPlayers: { [Player]: boolean } = {}
+local dirtyVersion: { [Player]: number } = {}
+local savedVersion: { [Player]: number } = {}
 
 -- Optional seam for isolated tests (never swap stores in production gameplay).
 function ReceiptHandler.setDataStore(store: DataStore)
@@ -486,7 +489,9 @@ end
 -- Writes the live session over the stored record. The live session is the source of truth: a grant
 -- and its PurchaseId enter the session together, so a full write never separates them.
 local function writeSession(player: Player)
-	playerStore:UpdateAsync(`Player_{player.UserId}`, function(oldData: any, keyInfo: DataStoreKeyInfo?)
+	local writtenVersion: number? = nil
+	local committed = playerStore:UpdateAsync(`Player_{player.UserId}`, function(oldData: any, keyInfo: DataStoreKeyInfo?)
+		writtenVersion = nil
 		if not cloneRecord(oldData) then
 			return nil -- do not overwrite corrupt data
 		end
@@ -495,16 +500,21 @@ local function writeSession(player: Player)
 		if not candidate then
 			return nil
 		end
+		writtenVersion = dirtyVersion[player] or 0
 		local userIds, metadata = keyMetadata(player, keyInfo)
 		return candidate, userIds, metadata
 	end)
+	if committed ~= nil and writtenVersion ~= nil then
+		savedVersion[player] = writtenVersion
+	end
 end
 
 -- Commits the grant and its PurchaseId in one UpdateAsync call, and returns a copy of the committed
--- record. The transform starts from a deep copy of the live session, so that a transform retry or
--- a failed write never changes the session. The caller holds the write lock.
-local function commitGrant(player: Player, purchaseId: string, handler: GrantHandler): PlayerRecord?
+-- record plus the dirty version captured in the transform. The transform starts from a deep copy
+-- of the live session, so that a transform retry or a failed write never changes the session.
+local function commitGrant(player: Player, purchaseId: string, handler: GrantHandler): (PlayerRecord?, number)
 	local deferReason = "write cancelled"
+	local capturedVersion = dirtyVersion[player] or 0
 	local committed = playerStore:UpdateAsync(`Player_{player.UserId}`, function(oldData: any, keyInfo: DataStoreKeyInfo?)
 		deferReason = "write cancelled"
 		if not cloneRecord(oldData) then
@@ -527,6 +537,7 @@ local function commitGrant(player: Player, purchaseId: string, handler: GrantHan
 			deferReason = "product handler returned false"
 			return nil -- cancel the write: purchase stays unresolved and retries later
 		end
+		capturedVersion = dirtyVersion[player] or 0
 		table.insert(candidate.ProcessedReceipts, purchaseId)
 		local userIds, metadata = keyMetadata(player, keyInfo)
 		return candidate, userIds, metadata
@@ -534,16 +545,22 @@ local function commitGrant(player: Player, purchaseId: string, handler: GrantHan
 	local record = if typeof(committed) == "table" then cloneRecord(committed) else nil
 	if not (record and hasReceipt(record.ProcessedReceipts, purchaseId)) then
 		warn(`[ReceiptHandler] Deferred {purchaseId}: {deferReason}`)
-		return nil
+		return nil, capturedVersion
 	end
-	return record
+	return record, capturedVersion
 end
 
 -- Applies a committed grant to a copy of the live session, then puts the copy in place of the
 -- session, so that gameplay changes made during the UpdateAsync yield stay. If the handler raises
 -- an error or returns false on that copy, the session takes the committed record. The paid grant
 -- stays, and only the gameplay changes made after the transform ran are lost.
-local function applyCommittedGrant(player: Player, purchaseId: string, handler: GrantHandler, committed: PlayerRecord)
+local function applyCommittedGrant(
+	player: Player,
+	purchaseId: string,
+	handler: GrantHandler,
+	committed: PlayerRecord,
+	capturedVersion: number
+)
 	local live = sessions[player]
 	if not live then
 		return -- the next loadSession reads the committed grant from the store
@@ -554,12 +571,14 @@ local function applyCommittedGrant(player: Player, purchaseId: string, handler: 
 		if isOk and result == true then
 			table.insert(updated.ProcessedReceipts, purchaseId)
 			sessions[player] = updated
+			savedVersion[player] = capturedVersion
 			syncLeaderstats(player, updated)
 			return
 		end
 		warn(`[ReceiptHandler] {purchaseId}: handler refused the live session ({result}). The session takes the committed record.`)
 	end
 	sessions[player] = committed
+	savedVersion[player] = dirtyVersion[player] or 0
 	syncLeaderstats(player, committed)
 end
 
@@ -587,6 +606,8 @@ function ReceiptHandler.loadSession(player: Player): boolean
 		return false
 	end
 	sessions[player] = record
+	dirtyVersion[player] = 0
+	savedVersion[player] = 0
 	syncLeaderstats(player, record)
 	return true
 end
@@ -602,19 +623,21 @@ function ReceiptHandler.addCoins(player: Player, delta: number): boolean
 	if not session or typeof(delta) ~= "number" or delta ~= delta or delta == math.huge or delta == -math.huge then
 		return false
 	end
-	session.Coins += delta
-	syncLeaderstats(player, session)
+	if delta ~= 0 then
+		session.Coins += delta
+		dirtyVersion[player] = (dirtyVersion[player] or 0) + 1
+		syncLeaderstats(player, session)
+	end
 	return true
 end
 
--- Saves the live session, with SAVE_ATTEMPTS tries and a growing delay between them. With `unload`,
--- the session is removed after the last try, also when each try failed.
+-- Saves the live session, with SAVE_ATTEMPTS tries and capped exponential backoff with jitter.
+-- With `unload`, the session is removed after the last try, also when each try failed.
 function ReceiptHandler.saveSession(player: Player, unload: boolean?): boolean
 	if not sessions[player] then
 		return false
 	end
 	local isLockOk, result = withWriteLock(player, function(): boolean
-		local retryDelay = SAVE_RETRY_DELAY
 		for attempt = 1, SAVE_ATTEMPTS do
 			if not sessions[player] then
 				return false -- another save unloaded the session while this call waited
@@ -625,8 +648,9 @@ function ReceiptHandler.saveSession(player: Player, unload: boolean?): boolean
 			end
 			warn(`[ReceiptHandler] Save attempt {attempt} of {SAVE_ATTEMPTS} failed for {player.UserId}: {err}`)
 			if attempt < SAVE_ATTEMPTS then
-				task.wait(retryDelay)
-				retryDelay *= 2
+				local backoff = math.min(BASE_RETRY_DELAY * (2 ^ (attempt - 1)), MAX_RETRY_DELAY)
+				local jitter = math.random() * 0.5
+				task.wait(backoff + jitter)
 			end
 		end
 		return false
@@ -639,8 +663,22 @@ function ReceiptHandler.saveSession(player: Player, unload: boolean?): boolean
 			warn(`[ReceiptHandler] Unloading {player.UserId} without a successful save`)
 		end
 		sessions[player] = nil
+		dirtyVersion[player] = nil
+		savedVersion[player] = nil
 	end
 	return isSaved
+end
+
+-- Periodic autosave helper: skips clean sessions and skips players whose write lock is already held
+-- so autosave neither wastes DataStore budget nor stacks waiting threads.
+function ReceiptHandler.autosaveSession(player: Player): boolean
+	if not sessions[player] or writingPlayers[player] then
+		return false
+	end
+	if (dirtyVersion[player] or 0) == (savedVersion[player] or 0) then
+		return false
+	end
+	return ReceiptHandler.saveSession(player, false)
 end
 
 -- Saves and unloads each loaded session in parallel, and returns when each save has ended.
@@ -706,11 +744,11 @@ function ReceiptHandler.process(receiptInfo: { [string]: any }): Enum.ProductPur
 		if hasReceipt(live.ProcessedReceipts, purchaseId) then
 			return true -- another call committed this PurchaseId while this call waited
 		end
-		local committed = commitGrant(player, purchaseId, grantHandler)
+		local committed, capturedVersion = commitGrant(player, purchaseId, grantHandler)
 		if not committed then
 			return false
 		end
-		applyCommittedGrant(player, purchaseId, grantHandler, committed)
+		applyCommittedGrant(player, purchaseId, grantHandler, committed, capturedVersion)
 		return true
 	end)
 	if not isLockOk then
@@ -801,9 +839,18 @@ game:BindToClose(ReceiptHandler.saveAllSessions)
 
 task.spawn(function()
 	while true do
-		task.wait(AUTOSAVE_INTERVAL)
-		for _, player in Players:GetPlayers() do
-			task.spawn(ReceiptHandler.saveSession, player)
+		local players = Players:GetPlayers()
+		if #players == 0 then
+			task.wait(AUTOSAVE_INTERVAL)
+		else
+			-- Spread autosaves evenly across the interval and skip clean or busy sessions.
+			local step = AUTOSAVE_INTERVAL / #players
+			for _, player in players do
+				task.wait(step)
+				if player:IsDescendantOf(Players) then
+					task.spawn(ReceiptHandler.autosaveSession, player)
+				end
+			end
 		end
 	end
 end)
