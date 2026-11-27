@@ -721,12 +721,12 @@
   {
    "id": "datastore-persistence-008",
    "file": "references/datastore-persistence.md",
-   "quote": "only for fire-and-forget writes where overwrites are acceptable (e.g., analytics",
-   "status": "advice",
+   "quote": "**Rule of thumb:** Always prefer `UpdateAsync` for player data, paired with session locking (such as ProfileStore)",
+   "status": "docs",
    "kind": "negative",
-   "source": "",
-   "evidence": "",
-   "checked": ""
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md",
+   "evidence": "UpdateAsync alone is atomic per key update and does not provide session locking across active servers.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "datastore-persistence-009",
@@ -841,12 +841,12 @@
   {
    "id": "datastore-persistence-024",
    "file": "references/datastore-persistence.md",
-   "quote": "As of April 9, 2026, DataStore limits are calculated at **experience level** (not per-server).",
+   "quote": "Data stores are subject to both **experience-level and server-level limits** (checked 2026-11-26 against the official",
    "status": "docs",
    "kind": "number",
-   "source": "DevForum topic 4504347 (Roblox Staff), April 9 update",
-   "evidence": "\"As of April 9, we have begun rolling out Data Stores Storage Limits and Modern Experience-Level Access Limits\".",
-   "checked": "2026-10-11, engine 0.742.0.7421053"
+   "source": "Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md",
+   "evidence": "Official page: experience and server-level limits; base 300/min standard and ordered; storage 500 MB + 1 MB x lifetime user count.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
   },
   {
    "id": "datastore-persistence-025",
@@ -12726,6 +12726,56 @@
    "kind": "number",
    "source": "Roblox/creator-docs reference/engine/classes/DataModel.md",
    "evidence": "The experience server waits 30 seconds for all bound functions to stop running before it shuts down.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
+  },
+  {
+   "id": "datastore-persistence-038",
+   "file": "references/datastore-persistence.md",
+   "quote": "**Multi-server safety** | Risk of data inconsistency | Atomic for one key update only (still needs a session lock for active player sessions)",
+   "status": "docs",
+   "kind": "negative",
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md",
+   "evidence": "UpdateAsync is atomic for a single key update; session locking is still required for active player sessions.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
+  },
+  {
+   "id": "datastore-persistence-039",
+   "file": "references/datastore-persistence.md",
+   "quote": "Data stores are subject to both **experience-level and server-level limits** (official [Error Codes & Limits]",
+   "status": "docs",
+   "kind": "number",
+   "source": "Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md",
+   "evidence": "Standard and Ordered DataStore experience limits: base 300/min + concurrentUsers x (40 read, 20 write, 2 list, 40 remove).",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
+  },
+  {
+   "id": "datastore-persistence-040",
+   "file": "references/datastore-persistence.md",
+   "quote": "2. Read the legacy store via DataStore2's `Get(nil)` wrapped in `pcall`, and verify `not oldStore:IsBackup()`",
+   "status": "source",
+   "kind": "negative",
+   "source": "Kampfkarren/Roblox DataStore2 source",
+   "evidence": "DataStore2:Get retries until success by default; with SetBackup enabled, IsBackup() distinguishes a backup value from real data.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
+  },
+  {
+   "id": "datastore-persistence-041",
+   "file": "references/datastore-persistence.md",
+   "quote": "4. If the read errors or returns a backup, end the session and kick the player without setting `migrated = true`",
+   "status": "advice",
+   "kind": "negative",
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md",
+   "evidence": "Avoid marking a failed or backup migration complete so legacy data is not abandoned.",
+   "checked": "2026-11-26, engine 0.748.0.7481526"
+  },
+  {
+   "id": "security-hardening-offline-only",
+   "file": "references/security-hardening.md",
+   "quote": "below only for offline keys or standalone atomic counters.",
+   "status": "advice",
+   "kind": "negative",
+   "source": "Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md",
+   "evidence": "An active server session can overwrite an out-of-band UpdateAsync write on its next save.",
    "checked": "2026-11-26, engine 0.748.0.7481526"
   }
  ]

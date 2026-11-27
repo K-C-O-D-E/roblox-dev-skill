@@ -204,6 +204,11 @@ A common pattern for organizing game logic:
 
 ### Server Service Example
 
+> **Production persistence note:** For live games with cross-server teleports or paid items, back
+> `PlayerDataService` with a session-locked library such as ProfileStore (see
+> `datastore-persistence.md`). The standalone `DataStoreService` example below shows the service
+> layout with atomic `UpdateAsync` writes, bounded save retries, and post-yield leave checks.
+
 <!-- skilltest: expect inventory-not-shared -->
 ```luau
 --!strict
@@ -215,6 +220,7 @@ local PlayerDataService = {}
 
 local playerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
 local sessionData: { [number]: PlayerData } = {}
+local MAX_SAVE_RETRIES = 3
 
 export type PlayerData = {
 	Coins: number,
@@ -237,10 +243,21 @@ function PlayerDataService.Init()
 		PlayerDataService.saveData(player)
 	end)
 
-	-- On shutdown PlayerRemoving may not get to finish; save everyone still in the session.
+	-- On shutdown PlayerRemoving may not finish; wait for every spawned save task to settle.
 	game:BindToClose(function()
-		for _, player in Players:GetPlayers() do
-			PlayerDataService.saveData(player)
+		local activePlayers = Players:GetPlayers()
+		local remaining = #activePlayers
+		for _, player in activePlayers do
+			task.spawn(function()
+				local ok, err = pcall(PlayerDataService.saveData, player)
+				if not ok then
+					warn(`[PlayerDataService] BindToClose save failed for {player.UserId}: {err}`)
+				end
+				remaining -= 1
+			end)
+		end
+		while remaining > 0 do
+			task.wait()
 		end
 	end)
 end
@@ -257,23 +274,38 @@ function PlayerDataService.loadData(player: Player)
 		player:Kick("Your data could not be loaded. Please rejoin.")
 		return
 	end
+	if not player:IsDescendantOf(Players) then
+		-- Player left while GetAsync yielded: do not leak an orphaned entry in sessionData.
+		return
+	end
 	sessionData[player.UserId] = if data then data :: PlayerData else defaultData()
 end
 
-function PlayerDataService.saveData(player: Player)
+function PlayerDataService.saveData(player: Player): boolean
 	local data = sessionData[player.UserId]
 	if not data then
-		return
+		return false
 	end
 
-	local ok, err = pcall(function()
-		playerDataStore:SetAsync(`Player_{player.UserId}`, data)
-	end)
-	if not ok then
-		warn(`[PlayerDataService] save failed for {player.UserId}: {err}`)
+	local saved = false
+	for attempt = 1, MAX_SAVE_RETRIES do
+		local ok, err = pcall(function()
+			playerDataStore:UpdateAsync(`Player_{player.UserId}`, function(_oldData: any): PlayerData
+				return data
+			end)
+		end)
+		if ok then
+			saved = true
+			break
+		end
+		warn(`[PlayerDataService] save attempt {attempt} failed for {player.UserId}: {err}`)
+		if attempt < MAX_SAVE_RETRIES then
+			task.wait(math.min(2 ^ (attempt - 1), 8))
+		end
 	end
 
 	sessionData[player.UserId] = nil
+	return saved
 end
 
 function PlayerDataService.getData(player: Player): PlayerData?

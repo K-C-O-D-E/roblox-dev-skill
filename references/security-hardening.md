@@ -382,16 +382,23 @@ end)
 Use `GlobalDataStore:UpdateAsync()` for atomic read-modify-write operations. Never use
 `GetAsync` followed by `SetAsync` — this creates race conditions.
 
+> **Session-lock boundary:** `UpdateAsync` is atomic for one key update, not a session lock. If the
+> player is currently online on a server holding an active in-memory session (for example,
+> ProfileStore), send currency changes through that session-owning server instead of writing
+> out-of-band; otherwise that server's next save will overwrite the change. Use direct `UpdateAsync`
+> below only for offline keys or standalone atomic counters.
+
 ```luau
 --!strict
 local DataStoreService = game:GetService("DataStoreService")
 local playerStore = DataStoreService:GetDataStore("PlayerData")
 
-local function addCurrency(userId: number, amount: number): boolean
+-- Offline-only or standalone atomic update (do not call out-of-band while a session holds the key).
+local function addOfflineCurrency(userId: number, amount: number): boolean
     local success, _ = pcall(function()
-        playerStore:UpdateAsync("Player_" .. userId, function(oldData)
-            local data = oldData or { currency = 0 }
-            data.currency = (data.currency or 0) + amount
+        playerStore:UpdateAsync(`Player_{userId}`, function(oldData: any)
+            local data = if typeof(oldData) == "table" then oldData else { currency = 0 }
+            data.currency = (if typeof(data.currency) == "number" then data.currency else 0) + amount
             return data
         end)
     end)

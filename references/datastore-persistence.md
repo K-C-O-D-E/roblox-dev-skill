@@ -111,12 +111,10 @@ end)
 | **Atomicity** | No — can overwrite concurrent writes from other servers | Yes — reads current value before writing |
 | **Speed** | Faster (write only) | Slower (read then write) |
 | **Budget cost** | Write limit only | Both read AND write limits |
-| **Multi-server safety** | Risk of data inconsistency | Safe against race conditions |
+| **Multi-server safety** | Risk of data inconsistency | Atomic for one key update only (still needs a session lock for active player sessions) |
 | **Callback** | N/A | Receives current value, must return new value (or `nil` to cancel) |
 
-**Rule of thumb:** Always prefer `UpdateAsync` for player data. Use `SetAsync`
-only for fire-and-forget writes where overwrites are acceptable (e.g., analytics
-counters, initial data seeding).
+**Rule of thumb:** Always prefer `UpdateAsync` for player data, paired with session locking (such as ProfileStore) so an out-of-band update is not overwritten by an active server's next save. Use `SetAsync` only for writes where the new value does not depend on the previous value (e.g., initial seeding, stateless snapshots).
 
 ---
 
@@ -128,7 +126,16 @@ call in `pcall`. This is not optional.
 ```luau
 --!strict
 local MAX_RETRIES = 3
-local RETRY_DELAY = 2
+local BASE_RETRY_DELAY = 1
+local MAX_RETRY_DELAY = 8
+
+local function isPermanentError(err: any): boolean
+    local message = tostring(err)
+    -- 101-106 and 401-404 indicate invalid key/data, studio access disabled, or permission errors.
+    return string.find(message, "10[1-6]") ~= nil
+        or string.find(message, "40[1-4]") ~= nil
+        or string.find(message, "API Services rejected") ~= nil
+end
 
 local function safeGetAsync(store: DataStore, key: string): (boolean, any)
     for attempt = 1, MAX_RETRIES do
@@ -139,8 +146,13 @@ local function safeGetAsync(store: DataStore, key: string): (boolean, any)
             return true, result
         end
         warn(`[DataStore] Attempt {attempt} failed: {result}`)
+        if isPermanentError(result) then
+            return false, result
+        end
         if attempt < MAX_RETRIES then
-            task.wait(RETRY_DELAY * attempt) -- exponential-ish backoff
+            local backoff = math.min(BASE_RETRY_DELAY * (2 ^ (attempt - 1)), MAX_RETRY_DELAY)
+            local jitter = math.random() * 0.5
+            task.wait(backoff + jitter)
         end
     end
     return false, nil
@@ -151,27 +163,33 @@ end
 
 ## Rate Limits & Throttling
 
-### Experience-Level Limits (Standard DataStores)
+### Experience-Level Limits (Checked 2026-11-26)
 
-| Request Type | Functions | Requests per Minute |
+Data stores are subject to both **experience-level and server-level limits** (official [Error Codes & Limits](https://create.roblox.com/docs/cloud-services/data-stores/error-codes-and-limits), checked 2026-11-26). Game servers and Open Cloud share the experience-level budgets below.
+
+#### Standard DataStores
+
+| Request Type | Game Server API | Shared Limits (Requests per Minute) |
 |---|---|---|
-| **Read** | GetAsync, GetVersionAsync, UpdateAsync (read part) | 250 + players × 40 |
-| **Write** | SetAsync, IncrementAsync, UpdateAsync (write part) | 250 + players × 20 |
-| **List** | ListDataStoresAsync, ListKeysAsync, ListVersionsAsync | 10 + players × 2 |
-| **Remove** | RemoveAsync | 100 + players × 40 |
+| **Read** | `GetAsync`, `GetVersionAsync`, `GetVersionAtTimeAsync`, `UpdateAsync` | `300 + concurrentUsers × 40` |
+| **Write** | `SetAsync`, `IncrementAsync`, `UpdateAsync` | `300 + concurrentUsers × 20` |
+| **List** | `ListDataStoresAsync`, `ListKeysAsync`, `ListVersionsAsync` | `300 + concurrentUsers × 2` |
+| **Remove** | `RemoveAsync` | `300 + concurrentUsers × 40` |
+
+#### Ordered DataStores
+
+| Request Type | Game Server API | Shared Limits (Requests per Minute) |
+|---|---|---|
+| **Read** | `GetAsync`, `BatchGetAsync`, `UpdateAsync` | `300 + concurrentUsers × 40` |
+| **Write** | `SetAsync`, `IncrementAsync`, `UpdateAsync` | `300 + concurrentUsers × 20` |
+| **List** | `GetSortedAsync` | `300 + concurrentUsers × 2` |
+| **Remove** | `RemoveAsync` | `300 + concurrentUsers × 40` |
 
 > `UpdateAsync` counts against **both** read and write budgets.
 
-### Server-Level Defaults (Configurable)
+### Server-Level Limits (Configurable)
 
-| Request Type | Requests per Minute |
-|---|---|
-| **Read** | 60 + numPlayers × 40 |
-| **Write** | 60 + numPlayers × 40 |
-| **List** | 5 + numPlayers × 2 |
-| **Remove** | 60 + numPlayers × 40 |
-
-Server limits are configurable via `DataStoreService:SetRateLimitForRequestType()`.
+Individual servers enforce configurable per-server caps alongside the experience-level limits above. Use `DataStoreService:SetRateLimitForRequestType()` and `DataStoreService:GetRequestBudgetForRequestType()` to control each server's share of the experience budget.
 
 ### Per-Key Throughput Limits
 
@@ -305,10 +323,17 @@ if listOk then
         local getOk, value, info = pcall(function()
             return store:GetVersionAsync(KEY, closest.Version)
         end)
-        if getOk then
+        if getOk and info then
+            -- Restore only when no active server session holds KEY, or that session's next save
+            -- will overwrite the restore. Pass info:GetUserIds() so GDPR user IDs are not cleared.
             local setOptions = Instance.new("DataStoreSetOptions")
             setOptions:SetMetadata(info:GetMetadata())
-            store:SetAsync(KEY, value, nil, setOptions)
+            local setOk, setErr = pcall(function()
+                store:SetAsync(KEY, value, info:GetUserIds(), setOptions)
+            end)
+            if not setOk then
+                warn(`[DataStore] Failed to restore {KEY}: {setErr}`)
+            end
         end
     end
 end
@@ -318,11 +343,11 @@ end
 
 ## Storage & Access Limits (Updated April 2026)
 
-As of April 9, 2026, DataStore limits are calculated at **experience level** (not per-server).
+Data stores are subject to both **experience-level and server-level limits** (checked 2026-11-26 against the official [Error Codes & Limits](https://create.roblox.com/docs/cloud-services/data-stores/error-codes-and-limits) page).
 
 ### Storage Limit Formula
 ```
-Total storage = 100 MB + 1 MB × lifetime user count
+Total latest version storage limit = 500 MB + 1 MB × lifetime user count
 ```
 
 - A **lifetime user** is any user who has joined the experience at least once
@@ -514,29 +539,42 @@ Roblox status):
 
 ### Migration: DataStore2 → ProfileStore
 
-1. Read existing data via DataStore2's `Get()` one last time
-2. Write it into ProfileStore's format under the same key convention
-3. On subsequent loads, check if ProfileStore data exists; if not, fall back to DataStore2
-4. Once all active players have been migrated, remove DataStore2 code
+1. Start the ProfileStore session, but block gameplay (do not expose the profile to game systems) until migration completes
+2. Read the legacy store via DataStore2's `Get(nil)` wrapped in `pcall`, and verify `not oldStore:IsBackup()` (if `SetBackup` is configured, a backup value is not an authoritative read)
+3. Copy any existing fields into `profile.Data`, and set `profile.Data.migrated = true` on both a migrated record and a verified absent record (`oldData == nil` with `not oldStore:IsBackup()`) so later joins do not query DataStore2 again
+4. If the read errors or returns a backup, end the session and kick the player without setting `migrated = true`
 
 <!-- skilltest: requires DataStore2; expect datastore2-migrates -->
 ```luau
 --!strict
--- Simplified migration check (server-side)
-local function migrateFromDataStore2(player: Player, profile: any)
-    if profile.Data.migrated then return end
+-- Run this BEFORE exposing `profile` to game systems so the player cannot play with unmigrated data.
+-- Returns true only when migration succeeded or the legacy record was verified absent.
+local function migrateFromDataStore2(player: Player, profile: any): boolean
+    if profile.Data.migrated then
+        return true
+    end
 
-    -- Attempt to read from old DataStore2
     local DataStore2 = require(game:GetService("ServerStorage"):WaitForChild("DataStore2") :: ModuleScript) -- legacy module
     local oldStore = DataStore2("PlayerSave", player)
-    local oldData = oldStore:Get(nil)
+    local ok, oldData = pcall(function()
+        return oldStore:Get(nil)
+    end)
+    if not ok then
+        warn(`[DataStore2Migration] Read failed for {player.UserId}: {oldData}`)
+        return false
+    end
+    if typeof(oldStore.IsBackup) == "function" and oldStore:IsBackup() then
+        warn(`[DataStore2Migration] Backup returned for {player.UserId}; refusing to migrate`)
+        return false
+    end
 
-    if oldData then
-        -- Merge old data into ProfileStore format
+    if typeof(oldData) == "table" then
         profile.Data.coins = oldData.coins or profile.Data.coins
         profile.Data.inventory = oldData.inventory or profile.Data.inventory
-        profile.Data.migrated = true
     end
+    -- Mark migrated for both copied data and a verified absent legacy key (avoids repeat reads).
+    profile.Data.migrated = true
+    return true
 end
 ```
 

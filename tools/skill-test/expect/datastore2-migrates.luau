@@ -1,10 +1,20 @@
--- expect: old DataStore2 data is merged once, then the profile is marked migrated.
+-- expect: old DataStore2 data merges once, verified absence marks migrated, and backups refuse migration.
 local profile = { Data = { coins = 0, inventory = {}, migrated = false } }
 local fake = { UserId = -910004 } :: any
-migrateFromDataStore2(fake, profile)
+__skilltest.eq("existing record returns true", migrateFromDataStore2(fake, profile), true)
 __skilltest.eq("coins merged from the old store", profile.Data.coins, 99)
 __skilltest.eq("inventory merged", profile.Data.inventory[1], "Bow")
 __skilltest.eq("marked migrated", profile.Data.migrated, true)
 profile.Data.coins = 5
-migrateFromDataStore2(fake, profile)
+__skilltest.eq("a second call returns true", migrateFromDataStore2(fake, profile), true)
 __skilltest.eq("a second call changes nothing", profile.Data.coins, 5)
+
+local absentProfile = { Data = { coins = 0, inventory = {}, migrated = false } }
+local absentPlayer = { UserId = -910005 } :: any
+__skilltest.eq("verified absent old record returns true", migrateFromDataStore2(absentPlayer, absentProfile), true)
+__skilltest.eq("verified absent old record marks migrated", absentProfile.Data.migrated, true)
+
+local backupProfile = { Data = { coins = 0, inventory = {}, migrated = false } }
+local backupPlayer = { UserId = -910006 } :: any
+__skilltest.eq("backup value returns false", migrateFromDataStore2(backupPlayer, backupProfile), false)
+__skilltest.eq("backup value does not mark migrated", backupProfile.Data.migrated, false)
