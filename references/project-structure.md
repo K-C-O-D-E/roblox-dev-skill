@@ -204,6 +204,11 @@ A common pattern for organizing game logic:
 
 ### Server Service Example
 
+> **Production persistence note:** For live games with cross-server teleports or paid items, back
+> `PlayerDataService` with a session-locked library such as ProfileStore (see
+> `datastore-persistence.md`). The standalone `DataStoreService` example below shows the service
+> layout with atomic `UpdateAsync` writes, bounded save retries, and post-yield leave checks.
+
 <!-- skilltest: expect inventory-not-shared -->
 ```luau
 --!strict
@@ -214,7 +219,17 @@ local DataStoreService = game:GetService("DataStoreService")
 local PlayerDataService = {}
 
 local playerDataStore = DataStoreService:GetDataStore("PlayerData_v1")
-local sessionData: { [number]: PlayerData } = {}
+-- Key session state by Player instance (not UserId) so an old departure save never clears a rejoined session.
+local sessionData: { [Player]: PlayerData } = {}
+local finalSaveState: { [Player]: "queued" | "saving" | "saved" } = {}
+local savingByUserId: { [number]: boolean } = {}
+local activeSaves = 0
+local pendingSaves = 0 -- players currently "queued" or "saving"
+local SAVE_ATTEMPTS = 3
+local BASE_RETRY_DELAY = 1 -- seconds
+local MAX_RETRY_DELAY = 8 -- seconds
+local SHUTDOWN_SAVE_BUDGET_SECONDS = 28
+local MAX_CONCURRENT_SAVES = 10
 
 export type PlayerData = {
 	Coins: number,
@@ -235,49 +250,116 @@ function PlayerDataService.Init()
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		PlayerDataService.saveData(player)
+		if finalSaveState[player] == "saved" then
+			finalSaveState[player] = nil
+		end
 	end)
 
-	-- On shutdown PlayerRemoving may not get to finish; save everyone still in the session.
+	-- Wait for saves already started by PlayerRemoving and start one for remaining players.
+	-- Both callbacks share saveData's MAX_CONCURRENT_SAVES cap, and Roblox waits up to 30 seconds.
 	game:BindToClose(function()
+		local deadline = os.clock() + SHUTDOWN_SAVE_BUDGET_SECONDS
 		for _, player in Players:GetPlayers() do
-			PlayerDataService.saveData(player)
+			if finalSaveState[player] == nil and sessionData[player] ~= nil then
+				task.spawn(PlayerDataService.saveData, player)
+			end
+		end
+		while pendingSaves > 0 and os.clock() < deadline do
+			task.wait()
+		end
+		if pendingSaves > 0 then
+			local queuedSaves = pendingSaves - activeSaves
+			warn(`[PlayerDataService] Shutdown deadline reached with {pendingSaves} final saves unfinished ({activeSaves} active, {queuedSaves} queued)`)
 		end
 	end)
 end
 
 function PlayerDataService.loadData(player: Player)
+	local userId = player.UserId
+	-- Serialize with any in-flight departure save for the same UserId before reading.
+	while savingByUserId[userId] do
+		if not player:IsDescendantOf(Players) then
+			return
+		end
+		task.wait()
+	end
+
 	local success, data = pcall(function()
-		return playerDataStore:GetAsync(`Player_{player.UserId}`)
+		return playerDataStore:GetAsync(`Player_{userId}`)
 	end)
 
 	if not success then
 		-- Never fall back to defaults on a FAILED read: saveData would later overwrite the
 		-- player's real save with them. Leave no session, so nothing is saved.
-		warn(`[PlayerDataService] load failed for {player.UserId}: {data}`)
+		warn(`[PlayerDataService] load failed for {userId}: {data}`)
 		player:Kick("Your data could not be loaded. Please rejoin.")
 		return
 	end
-	sessionData[player.UserId] = if data then data :: PlayerData else defaultData()
-end
-
-function PlayerDataService.saveData(player: Player)
-	local data = sessionData[player.UserId]
-	if not data then
+	if not player:IsDescendantOf(Players) then
+		-- Player left while GetAsync yielded: do not leak an orphaned entry in sessionData.
 		return
 	end
+	sessionData[player] = if data then data :: PlayerData else defaultData()
+end
 
-	local ok, err = pcall(function()
-		playerDataStore:SetAsync(`Player_{player.UserId}`, data)
-	end)
-	if not ok then
-		warn(`[PlayerDataService] save failed for {player.UserId}: {err}`)
+function PlayerDataService.saveData(player: Player): boolean
+	if finalSaveState[player] ~= nil then
+		return false -- final save already queued, in progress, or completed for this Player session
+	end
+	local data = sessionData[player]
+	if not data then
+		return false
 	end
 
-	sessionData[player.UserId] = nil
+	local userId = player.UserId
+	finalSaveState[player] = "queued"
+	savingByUserId[userId] = true
+	pendingSaves += 1
+
+	-- Share one concurrency cap across PlayerRemoving and BindToClose so bursts stay under
+	-- Roblox's 30-request DataStore queue limit.
+	while activeSaves >= MAX_CONCURRENT_SAVES do
+		task.wait()
+	end
+
+	finalSaveState[player] = "saving"
+	activeSaves += 1
+
+	local saved = false
+	for attempt = 1, SAVE_ATTEMPTS do
+		local ok, err = pcall(function()
+			playerDataStore:UpdateAsync(`Player_{userId}`, function(_oldData: any, keyInfo: DataStoreKeyInfo?)
+				local userIds = if keyInfo then keyInfo:GetUserIds() else {}
+				-- Preserve associated UserIds and metadata; associate positive player UserIds when absent.
+				if #userIds == 0 and userId > 0 then
+					userIds = { userId }
+				end
+				local metadata = if keyInfo then keyInfo:GetMetadata() else {}
+				return data, userIds, metadata
+			end)
+		end)
+		if ok then
+			saved = true
+			break
+		end
+		warn(`[PlayerDataService] save attempt {attempt} of {SAVE_ATTEMPTS} failed for {userId}: {err}`)
+		if attempt < SAVE_ATTEMPTS then
+			local backoff = math.min(BASE_RETRY_DELAY * (2 ^ (attempt - 1)), MAX_RETRY_DELAY)
+			local jitter = math.random() * 0.5
+			task.wait(backoff + jitter)
+		end
+	end
+
+	sessionData[player] = nil
+	savingByUserId[userId] = nil
+	finalSaveState[player] = if player:IsDescendantOf(Players) then "saved" else nil
+	activeSaves -= 1
+	pendingSaves -= 1
+	return saved
 end
 
 function PlayerDataService.getData(player: Player): PlayerData?
-	return sessionData[player.UserId]
+	return sessionData[player]
 end
 
 return PlayerDataService
@@ -286,7 +368,7 @@ return PlayerDataService
 > **One writer for `PlayerData_v1`.** This service is the one writer of the player record. A game
 > that sells developer products must keep each receipt grant and `ProcessedReceipts` in this same
 > record, and write the record from one session owner. Do not add a second writer for the same
-> key: its `SetAsync` on leave saves an older in-memory copy over the grant. Example 6 in
+> key: its leave save writes an older in-memory copy over the grant. Example 6 in
 > `worked-examples.md` (`ReceiptHandler`) is that session owner, and it replaces this service.
 
 ### Client Controller Example

@@ -8,7 +8,7 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 |---|---|---|---|---|---|---|---|
 | `SKILL.md` | 26 | 5 | 7 | 6 | 18 | 0 | 16 |
 | `references/agent-safety.md` | 12 | 10 | 0 | 0 | 23 | 0 | 4 |
-| `references/datastore-persistence.md` | 6 | 14 | 0 | 4 | 9 | 0 | 6 |
+| `references/datastore-persistence.md` | 6 | 18 | 0 | 6 | 10 | 0 | 6 |
 | `references/file-formats-and-assets.md` | 11 | 11 | 1 | 1 | 1 | 0 | 5 |
 | `references/legacy-migration.md` | 152 | 36 | 62 | 11 | 3 | 0 | 25 |
 | `references/luau-fundamentals.md` | 28 | 13 | 1 | 56 | 3 | 0 | 12 |
@@ -17,11 +17,11 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/networking.md` | 25 | 33 | 1 | 0 | 4 | 0 | 10 |
 | `references/performance-optimization.md` | 64 | 26 | 4 | 7 | 1 | 0 | 11 |
 | `references/project-structure.md` | 15 | 14 | 6 | 2 | 3 | 0 | 4 |
-| `references/security-hardening.md` | 27 | 37 | 3 | 0 | 7 | 0 | 13 |
+| `references/security-hardening.md` | 27 | 38 | 3 | 0 | 9 | 0 | 13 |
 | `references/studio-plugins-and-limits.md` | 18 | 1 | 1 | 1 | 9 | 0 | 0 |
 | `references/ui-systems.md` | 17 | 13 | 3 | 1 | 3 | 0 | 5 |
 | `references/worked-examples.md` | 22 | 9 | 3 | 1 | 23 | 3 | 1 |
-| **total** | **535** | **281** | **96** | **95** | **122** | **3** | **138** |
+| **total** | **535** | **286** | **96** | **97** | **125** | **3** | **138** |
 
 ## Verified claims
 
@@ -60,6 +60,7 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/datastore-persistence.md`: **Critical rule:** DataStoreService is **server-side only**. Attempting to access | docs | "Attempting client-side access in a LocalScript causes an error." (creator-docs cloud-services/data-stores/index.md) |
 | `references/datastore-persistence.md`: it from a `LocalScript` throws an error. All DataStore calls must live in `Script` | docs | As above. (creator-docs cloud-services/data-stores/index.md) |
 | `references/datastore-persistence.md`: **Budget cost** \| Write limit only \| Both read AND write limits | docs | UpdateAsync is listed under both the Read and the Write throughput limits; SetAsync only under Write. (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
+| `references/datastore-persistence.md`: **Rule of thumb:** Always prefer `UpdateAsync` for player data, paired with session locking (such as ProfileStore) | docs | UpdateAsync alone is atomic per key update and does not provide session locking across active servers. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md) |
 | `references/datastore-persistence.md`: Read \| 25 MB per minute per key | docs | Per-key throughput: Read 25 MB per minute. (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
 | `references/datastore-persistence.md`: Write \| 4 MB per minute per key | docs | Per-key throughput: Write 4 MB per minute. (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
 | `references/datastore-persistence.md`: Key value (data) \| 4,194,304 (4 MB) | docs | "4,194,304 per key". (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
@@ -69,7 +70,7 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/datastore-persistence.md`: `HashMap` \| 128 chars \| 32 KB \| Session state, cross-server cache | docs | "key size limit of 128 characters and a value size limit of 32 KB". (Roblox/creator-docs cloud-services/memory-stores (index, sorted-map, hash-map) and MemoryStore* reference) |
 | `references/datastore-persistence.md`: **Caution:** MemoryStoreService is for **temporary** data only. It is not a | docs | Items expire (TTL eviction). (Roblox/creator-docs cloud-services/memory-stores (index, sorted-map, hash-map) and MemoryStore* reference) |
 | `references/datastore-persistence.md`: write overwrites them. The latest version never expires. | docs | "Versioned backups expire 30 days after a new write overwrites them. The latest version never expires." (creator-docs versioning-listing-and-caching.md) |
-| `references/datastore-persistence.md`: As of April 9, 2026, DataStore limits are calculated at **experience level** (not per-server). | docs | "As of April 9, we have begun rolling out Data Stores Storage Limits and Modern Experience-Level Access Limits". (DevForum topic 4504347 (Roblox Staff), April 9 update) |
+| `references/datastore-persistence.md`: Data stores are subject to both **experience-level and server-level limits** (checked 2026-11-26 against the official | docs | Official page: experience and server-level limits; base 300/min standard and ordered; storage 500 MB + 1 MB x lifetime user count. (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
 | `references/datastore-persistence.md`: Only **one server** can "own" a player's data at a time | source | ProfileStore session locking (SESSION_STEAL, ASSUME_DEAD). (ProfileStore.luau (official repo) / ProfileService.lua) |
 | `references/datastore-persistence.md`: Automatically saves data at regular intervals (default: **300 seconds**) | source | AUTO_SAVE_PERIOD = 300. (ProfileStore.luau (official repo) / ProfileService.lua) |
 | `references/datastore-persistence.md`: **Auto-save interval** \| 30 seconds \| 300 seconds (configurable) | source | ProfileService SETTINGS.AutoSaveProfiles = 30; ProfileStore AUTO_SAVE_PERIOD = 300, settable via ProfileStore.SetConstant. (ProfileStore.luau (official repo) / ProfileService.lua) |
@@ -1173,3 +1174,9 @@ Every factual claim a reader could act on wrongly, with how it was verified. **s
 | `references/worked-examples.md`: `ThickHits > 0`, and `PlayerTriggered == true`; `get_console_output` reports 0 errors; | studio | Measured in Studio 0.748 playtest: ThinHits=0, ThickHits=6800, PlayerTriggered=true, 0 console errors. (Studio 0.748.0.7481526 physics_samples.luau) |
 | `references/worked-examples.md`: A host whose live tool list still exposes `list_skills` / `skill` (Studio 0.745–0.746) → use | docs | 0.745-0.746 hosts exposed list_skills/skill; 0.748 exposes list_roblox_skills/get_roblox_skill. (MCP schemas 0.745-0.746 vs 0.748) |
 | `references/datastore-persistence.md`: **Bind to close** — for raw DataStore saves, wait for all spawned save tasks to finish inside `game:BindToClose` (Roblox waits up to 30 seconds | docs | The experience server waits 30 seconds for all bound functions to stop running before it shuts down. (Roblox/creator-docs reference/engine/classes/DataModel.md) |
+| `references/datastore-persistence.md`: **Multi-server safety** \| Risk of data inconsistency \| Atomic for one key update only (still needs a session lock for active player sessions) | docs | UpdateAsync is atomic for a single key update; session locking is still required for active player sessions. (Roblox/creator-docs cloud-services/data-stores/player-data-purchasing.md) |
+| `references/datastore-persistence.md`: Data stores are subject to both **experience-level and server-level limits** (official [Error Codes & Limits] | docs | Standard and Ordered DataStore experience limits: base 300/min + concurrentUsers x (40 read, 20 write, 2 list, 40 remove). (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md) |
+| `references/datastore-persistence.md`: 2. Call `oldStore:SetBackup(3)` to bound DataStore2's internal retries (without `SetBackup`, DataStore2 retries failed reads indefinitely), then read via `oldSt | source | DataStore2:Get retries until success by default; with SetBackup enabled, IsBackup() distinguishes a backup value from real data. (Kampfkarren/Roblox DataStore2 source) |
+| `references/datastore-persistence.md`: Individual servers enforce configurable per-server caps alongside the experience-level limits above (official [Server Limits](https://create.roblox.com/docs/clo | docs | Default server budgets: Standard Read/Write/Remove 60 + numPlayers*40, List 5 + numPlayers*2; Ordered Read 60 + numPlayers*40, Write/Remove 30 + numPlayers*5, List 5 + numPlayers*2. (Roblox/creator-docs cloud-services/data-stores/error-codes-and-limits.md#server-limits) |
+| `references/datastore-persistence.md`: 3. If `oldData == nil` (with `not oldStore:IsBackup()`), verify genuine absence by checking DataStore2's `OrderedBackups` index (`DataStoreService:GetOrderedDat | source | OrderedBackups:Get() returns nil without IsBackup() if the OrderedDataStore index exists but the value key is missing; check the index before marking migrated. (Kampfkarren/Roblox DataStore2 OrderedBackups.lua#L24-L40) |
+| `references/security-hardening.md`: > and `keyInfo:GetMetadata()` from `UpdateAsync` so associated user IDs and lock metadata are never | docs | Omitting userIds or metadata in the UpdateAsync transform return clears existing associated IDs and metadata. (Roblox/creator-docs reference/engine/classes/GlobalDataStore.md#UpdateAsync) |
